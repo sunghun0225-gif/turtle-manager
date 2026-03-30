@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import os
 import time
+import requests
 
 # --- 위키백과 스크래핑 차단 방지용 SSL 우회 ---
 import ssl
@@ -11,7 +12,7 @@ ssl._create_default_https_context = ssl._create_unverified_context
 # ==========================================
 # 1. 기본 설정 및 데이터 로드 함수
 # ==========================================
-DB_FILE = 'portfolio_v3.csv'
+DB_FILE = 'portfolio_v4.csv'
 MAX_TOTAL_UNITS = 10       # 계좌 전체 최대 Unit 한도
 MAX_UNIT_PER_STOCK = 3     # 단일 종목 최대 Unit 한도 (밸런스형)
 
@@ -19,12 +20,17 @@ MAX_UNIT_PER_STOCK = 3     # 단일 종목 최대 Unit 한도 (밸런스형)
 def get_sp500_tickers():
     try:
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-        table = pd.read_html(url)[0]
+        # 💡 봇(Bot) 차단을 막기 위해 평범한 크롬 브라우저인 것처럼 신분증(User-Agent) 위장
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        
+        html = requests.get(url, headers=headers).text
+        table = pd.read_html(html)[0]
         tickers = table['Symbol'].tolist()
         # 야후 파이낸스 형식에 맞게 특수기호 변환 (예: BRK.B -> BRK-B)
         return [ticker.replace('.', '-') for ticker in tickers]
     except Exception as e:
-        # 스크래핑 실패 시 비상용 우량주 리스트 반환
+        # 스크래핑 실패 시 빨간 에러 메시지를 띄우고 비상용 우량주 리스트 반환
+        st.error(f"⚠️ S&P 500 리스트 로드 실패. 비상용 10종목으로 대체합니다. (사유: {e})")
         return ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'BRK-B', 'JNJ', 'JPM']
 
 TICKERS = get_sp500_tickers()
@@ -68,13 +74,13 @@ def analyze_ticker(ticker):
         df['High55'] = df['High'].rolling(55).max().shift(1)
         df['Low20'] = df['Low'].rolling(20).min().shift(1)
         
-        return df.iloc[-1]
+        return df # 차트 그리기를 위해 데이터프레임 전체 반환
     except: return None
 
 # ==========================================
 # 3. 앱 UI 및 메인 로직
 # ==========================================
-st.set_page_config(page_title="Turtle System V3", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle System V4", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state:
     st.session_state.positions = load_data()
@@ -87,7 +93,7 @@ exchange_rate = st.sidebar.number_input("현재 환율 (₩/$)", min_value=1000,
 
 st.sidebar.caption(f"💡 1회 매수 시 감수 위험액: ₩ {int(total_capital * risk_per_unit):,}")
 
-st.title("🐢 Turtle System V3")
+st.title("🐢 Turtle System V4")
 
 # --- 시장 필터 및 계좌 위험도 ---
 is_bull_market = check_market_filter()
@@ -104,7 +110,7 @@ col_u2.metric("현재 계좌 위험도", f"{current_total_units * (risk_per_unit
 st.divider()
 
 # --- 탭 구성 ---
-tab1, tab2 = st.tabs(["🔭 1. S&P 500 돌파 스캐너", "📋 2. 포지션 관리 (Action)"])
+tab1, tab2 = st.tabs(["🔭 1. S&P 500 돌파 스캐너", "📋 2. 포지션 관리 및 차트"])
 
 # ------------------------------------------
 # 탭 1: 스캐너 로직
@@ -125,14 +131,15 @@ with tab1:
             
             data = analyze_ticker(tkr)
             if data is not None:
+                latest = data.iloc[-1]
                 # 55일 신고가 돌파 확인
-                if data['Close'] > data['High55']:
-                    n_val = data['N']
+                if latest['Close'] > latest['High55']:
+                    n_val = latest['N']
                     unit_shares = int((total_capital * risk_per_unit) / (n_val * exchange_rate)) if n_val > 0 else 0
                     
                     if unit_shares > 0:
                         found_stocks.append({
-                            "Ticker": tkr, "Price": data['Close'], "N": n_val, "Rec_Shares": unit_shares
+                            "Ticker": tkr, "Price": latest['Close'], "N": n_val, "Rec_Shares": unit_shares
                         })
         
         my_bar.empty()
@@ -161,12 +168,12 @@ with tab1:
             st.info("💤 오늘은 55일 신고가를 돌파한 종목이 없습니다. 관망하세요.")
 
 # ------------------------------------------
-# 탭 2: 포지션 관리 및 수동 등록
+# 탭 2: 포지션 관리, 수동 등록 및 차트
 # ------------------------------------------
 with tab2:
     st.subheader("📋 내 보유 종목 현황")
     
-    # --- 수동 등록 UI 추가 ---
+    # --- 수동 등록 UI ---
     with st.expander("➕ 수동으로 내 보유 종목 등록하기"):
         with st.form("manual_add_form", clear_on_submit=True):
             new_tkr = st.text_input("종목 코드 (예: AAPL)").upper()
@@ -190,8 +197,9 @@ with tab2:
             data = analyze_ticker(tkr)
             if data is None: continue
             
-            curr_price = data['Close']
-            n_val = data['N']
+            latest = data.iloc[-1]
+            curr_price = latest['Close']
+            n_val = latest['N']
             units = pos['Units']
             avg_entry = pos['EntryPrice']
             
@@ -205,7 +213,7 @@ with tab2:
             stop_loss = avg_entry - (2 * n_val)
             trailing_stop = highest - (3 * n_val)
             exit_price = max(stop_loss, trailing_stop)
-            donchian_exit = data['Low20']
+            donchian_exit = latest['Low20']
             next_add_price = avg_entry + (0.5 * n_val)
 
             # --- 카드 UI ---
@@ -241,3 +249,10 @@ with tab2:
                             st.rerun()
                 else:
                     st.info(f"✅ **홀딩 (관망)** | 다음 불타기 목표가: ${next_add_price:.2f}")
+
+                # 📈 6개월 채널 차트 시각화
+                with st.expander("📈 터틀 채널 차트 확인 (6개월)"):
+                    st.caption("파란선: 현재가 / 상단선: 55일 돌파 기준선 / 하단선: 20일 신저가 방어선")
+                    # 차트에 그릴 핵심 데이터 3개만 추출
+                    chart_data = data[['Close', 'High55', 'Low20']].copy()
+                    st.line_chart(chart_data)

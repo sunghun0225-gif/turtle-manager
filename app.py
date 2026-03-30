@@ -67,11 +67,14 @@ def save_data(positions):
 # ==========================================
 @st.cache_data(ttl=3600)
 def check_market_filter():
+    """SPY 200일 이평선 기반 시장 필터"""
     try:
         spy = yf.Ticker("SPY").history(period="1y")
         spy['MA200'] = spy['Close'].rolling(200).mean()
-        return spy['Close'].iloc[-1] > spy['MA200'].iloc[-1]
-    except: return True
+        curr_spy = spy['Close'].iloc[-1]
+        ma200 = spy['MA200'].iloc[-1]
+        return curr_spy > ma200, curr_spy, ma200
+    except: return True, 0, 0
 
 @st.cache_data(ttl=3600)
 def analyze_ticker(ticker):
@@ -90,9 +93,9 @@ def analyze_ticker(ticker):
     except: return None
 
 # ==========================================
-# 3. 메인 UI
+# 3. 메인 UI 및 시장 지표 복구
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.6", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.7", layout="centered", page_icon="🐢")
 if "positions" not in st.session_state: st.session_state.positions = load_data()
 
 # --- 사이드바 ---
@@ -113,7 +116,16 @@ if uploaded_file is not None:
             save_data(st.session_state.positions); st.sidebar.success("✅ 복구 완료!"); st.rerun()
         except: st.sidebar.error("❌ 파일 형식 오류")
 
-st.title("🐢 Turtle System Pro V7.6")
+# --- 메인 타이틀 및 시장 지표 가이드 ---
+st.title("🐢 Turtle System Pro V7.7")
+
+# 💡 시장 필터 가이드라인 복구
+is_bull, spy_val, ma200_val = check_market_filter()
+if is_bull:
+    st.success(f"🟢 **시장 필터 통과 (대세 상승장)** | SPY(${spy_val:.2f}) > 200일선(${ma200_val:.2f})\n\n👉 **[1번 탭]** 터틀 스캐너를 통한 추세 추종 매매가 유리합니다.")
+else:
+    st.error(f"🔴 **시장 필터 경고 (대세 하락장)** | SPY(${spy_val:.2f}) < 200일선(${ma200_val:.2f})\n\n👉 **신규 매수 중단 권장.** 부득이한 경우 **[3번 탭]** 낙폭과대 스캔만 짧게 활용하세요.")
+
 current_total_units = sum([pos['Units'] for pos in st.session_state.positions.values()])
 c_d1, c_d2 = st.columns(2); c_d1.metric("총 관리 유닛", f"{current_total_units}/{MAX_TOTAL_UNITS} U"); c_d2.metric("보유 종목", f"{len(st.session_state.positions)}개")
 

@@ -67,13 +67,25 @@ def save_data(positions):
 # ==========================================
 @st.cache_data(ttl=3600)
 def check_market_filter():
+    """SPY 200일선 최근 5거래일 연속 추세 기반 시장 필터"""
     try:
         spy = yf.Ticker("SPY").history(period="1y")
         spy['MA200'] = spy['Close'].rolling(200).mean()
+        
         curr_spy = spy['Close'].iloc[-1]
-        ma200 = spy['MA200'].iloc[-1]
-        return curr_spy > ma200, curr_spy, ma200
-    except: return True, 0, 0
+        ma200_now = spy['MA200'].iloc[-1]
+        
+        # 💡 최근 6일치의 200일선 값을 가져와 5번의 일간 변화(비교)를 계산
+        last_6_ma200 = spy['MA200'].tail(6).values
+        
+        # 💡 총 5번의 비교: 어제보다 오늘이 높은지 5일 내내 연속으로 확인
+        is_trending_up = all(last_6_ma200[i] > last_6_ma200[i-1] for i in range(1, 6))
+        
+        # 필터 통과 조건: 주가가 200일선 위 & 200일선이 5거래일 연속 우상향 중
+        is_bull = (curr_spy > ma200_now) and is_trending_up
+        
+        return is_bull, curr_spy, ma200_now, is_trending_up
+    except: return True, 0, 0, False
 
 @st.cache_data(ttl=3600)
 def analyze_ticker(ticker):
@@ -94,7 +106,7 @@ def analyze_ticker(ticker):
 # ==========================================
 # 3. 메인 UI
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.10", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.12", layout="centered", page_icon="🐢")
 if "positions" not in st.session_state: st.session_state.positions = load_data()
 
 # --- 사이드바 ---
@@ -116,13 +128,22 @@ if uploaded_file is not None:
         except: st.sidebar.error("❌ 파일 형식 오류")
 
 # --- 메인 타이틀 ---
-st.title("🐢 Turtle System Pro V7.10")
+st.title("🐢 Turtle System Pro V7.12")
 
-is_bull, spy_val, ma200_val = check_market_filter()
+# 💡 개선된 5거래일 연속 추세 필터 브리핑 적용
+is_bull, spy_val, ma200_val, is_trending_up = check_market_filter()
 if is_bull:
-    st.success(f"🟢 **시장 필터 통과 (대세 상승장)** | SPY(${spy_val:.2f}) > 200일선(${ma200_val:.2f})\n\n👉 **[1번 탭]** 터틀 스캐너를 통한 추세 추종 매매가 유리합니다.")
+    st.success(f"🟢 **시장 필터 통과 (대세 상승장)**\n\n"
+               f"• SPY 현재가: **${spy_val:.2f}** (200일선 상회)\n"
+               f"• 200일선 추세: **우상향** (최근 5거래일 연속 상승 확인)\n\n"
+               f"👉 **[1번 탭]** 터틀 스캐너를 통한 추세 추종 매매가 유리합니다.")
 else:
-    st.error(f"🔴 **시장 필터 경고 (대세 하락장)** | SPY(${spy_val:.2f}) < 200일선(${ma200_val:.2f})\n\n👉 **신규 매수 중단 권장.** 부득이한 경우 **[3번 탭]** 낙폭과대 스캔만 짧게 활용하세요.")
+    trend_text = "**우상향** (최근 5거래일 연속 상승)" if is_trending_up else "**꺾임/하락/횡보** (최근 5일 중 상승 실패 구간 발생)"
+    st.error(f"🔴 **시장 필터 경고 (대세 하락장 또는 혼조세)**\n\n"
+             f"• SPY 현재가: **${spy_val:.2f}**\n"
+             f"• 200일선 추세: {trend_text}\n"
+             f"*(주가가 200일선 아래 있거나, 200일선 추세가 꺾임)*\n\n"
+             f"👉 **신규 매수 중단 권장.** 부득이한 경우 **[3번 탭]** 낙폭과대 스캔만 짧게 활용하세요.")
 
 current_total_units = sum([pos['Units'] for pos in st.session_state.positions.values()])
 c_d1, c_d2, c_d3 = st.columns(3)
@@ -143,12 +164,10 @@ with tab1:
             if data is not None:
                 latest = data.iloc[-1]
                 if latest['Close'] > latest['High55']:
-                    # 💡 현금 한도 필터 적용 로직
                     risk_shares = int((total_capital * risk_per_unit) / (latest['N'] * exchange_rate)) if latest['N'] > 0 else 1
                     max_cash_per_unit = total_capital / MAX_TOTAL_UNITS
                     cash_shares = int(max_cash_per_unit / (latest['Close'] * exchange_rate))
                     shares = max(1, min(risk_shares, cash_shares))
-                    
                     results.append({"Ticker": tkr, "Price": latest['Close'], "Shares": shares, "Strategy": "🚀 터틀-상승"})
         my_bar.empty(); st.session_state.scan_results = results
 
@@ -173,12 +192,10 @@ with tab3:
             if data is not None:
                 latest, prev = data.iloc[-1], data.iloc[-2]
                 if (data['Low'].iloc[-3:] <= data['BB_Lower'].iloc[-3:]).any() and latest['Close'] > latest['MA5'] and prev['Close'] <= prev['MA5']:
-                    # 💡 현금 한도 필터 적용 로직
                     risk_shares = int((total_capital * risk_per_unit) / (latest['N'] * exchange_rate)) if latest['N'] > 0 else 1
                     max_cash_per_unit = total_capital / MAX_TOTAL_UNITS
                     cash_shares = int(max_cash_per_unit / (latest['Close'] * exchange_rate))
                     shares = max(1, min(risk_shares, cash_shares))
-                    
                     results.append({"Ticker": tkr, "Price": latest['Close'], "Shares": shares, "Strategy": "📉 낙폭-하강"})
         my_bar.empty(); st.session_state.scan_results_bear = results
 

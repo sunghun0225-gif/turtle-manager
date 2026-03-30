@@ -7,13 +7,13 @@ import requests
 import json
 import altair as alt
 import feedparser
-from datetime import datetime
+from datetime import datetime, timedelta # 💡 KST 시간 변환을 위해 timedelta 추가
 
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # ==========================================
-# 1. 데이터 입출력 및 환경 설정 (터틀 기본)
+# 1. 데이터 입출력 및 환경 설정
 # ==========================================
 DB_FILE = 'internal_memory.csv' 
 MAX_TOTAL_UNITS = 10       
@@ -175,14 +175,29 @@ def get_sec_filings(ticker: str, limit: int = 12):
         if not recent: return None, "공시 데이터가 없습니다."
 
         forms, dates = recent.get("form", []), recent.get("filingDate", [])
-        filings = []
-        # 전체를 다 담은 후 정렬
-        for i in range(len(forms)):
-            filing_url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type={forms[i]}&dateb=&owner=include&count=10"
-            filings.append({"form": forms[i], "date": dates[i], "label": filing_label(forms[i]), "url": filing_url, "cik": cik})
+        acc_times = recent.get("acceptanceDateTime", []) 
         
-        # 💡 공시 날짜 기준 최신순 정렬 (내림차순)
-        filings.sort(key=lambda x: x['date'], reverse=True)
+        filings = []
+        for i in range(len(forms)):
+            # 💡 KST 한국 시간 변환 로직 (UTC + 9시간)
+            if i < len(acc_times) and acc_times[i]:
+                raw_dt = acc_times[i]
+                try:
+                    dt_utc = datetime.strptime(raw_dt[:16], "%Y-%m-%dT%H:%M")
+                    dt_kst = dt_utc + timedelta(hours=9) # KST 변환
+                    display_date = dt_kst.strftime("%Y-%m-%d %H:%M (KST)")
+                    sort_key = raw_dt
+                except:
+                    display_date = dates[i]
+                    sort_key = dates[i] + "T00:00:00"
+            else:
+                display_date = dates[i]
+                sort_key = dates[i] + "T00:00:00"
+
+            filing_url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type={forms[i]}&dateb=&owner=include&count=10"
+            filings.append({"form": forms[i], "date": display_date, "sort_key": sort_key, "label": filing_label(forms[i]), "url": filing_url, "cik": cik})
+        
+        filings.sort(key=lambda x: x['sort_key'], reverse=True)
         return filings[:limit], None
     except Exception as e:
         return None, f"오류: {e}"
@@ -197,27 +212,32 @@ def get_stock_news(query_name, market="US"):
         url = f"https://news.google.com/rss/search?q={query}+when:90d&hl={hl}&gl={gl}&ceid={ceid}"
         feed = feedparser.parse(url)
         
-        for entry in feed.entries[:20]: # 넉넉히 가져와서 정렬
+        for entry in feed.entries[:20]: 
             raw = entry.get("published_parsed")
-            date_str = datetime(*raw[:6]).strftime("%m-%d %H:%M") if raw else "날짜미상"
+            # 💡 KST 한국 시간 변환 로직 (UTC + 9시간)
+            if raw:
+                dt_utc = datetime(*raw[:6])
+                dt_kst = dt_utc + timedelta(hours=9)
+                date_str = dt_kst.strftime("%Y-%m-%d %H:%M (KST)")
+            else:
+                date_str = "날짜/시간 미상"
+
             news_list.append({
                 "title": entry.title, 
                 "link": entry.link, 
                 "date": date_str,
-                "raw_time": raw # 정렬용 원본 데이터
+                "raw_time": raw 
             })
             
-        # 💡 뉴스 발행시간 기준 최신순 정렬 (내림차순)
         news_list.sort(key=lambda x: x['raw_time'] if x['raw_time'] else time.localtime(0), reverse=True)
     except: pass
     
-    # 정렬 완료 후 상위 8개만 반환
     return news_list[:8]
 
 # ==========================================
 # 4. 메인 UI 및 세션 초기화
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.14", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.16", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state: st.session_state.positions = load_data()
 if "my_tickers_us" not in st.session_state: st.session_state["my_tickers_us"] = []
@@ -242,7 +262,7 @@ if uploaded_file is not None:
         except: st.sidebar.error("❌ 파일 형식 오류")
 
 # --- 메인 타이틀 ---
-st.title("🐢 Turtle System Pro V7.14")
+st.title("🐢 Turtle System Pro V7.16")
 
 is_bull, spy_val, ma200_val, is_trending_up = check_market_filter()
 if is_bull:
@@ -459,11 +479,19 @@ with tab5:
     with st.spinner("최신 경제 뉴스를 불러오는 중..."):
         feed = feedparser.parse("https://news.google.com/rss/search?q=global+economy+market+when:24h&hl=en-US&gl=US&ceid=US:en")
         
-        # 💡 뉴스 발행시간 기준 최신순 정렬 (내림차순)
         entries = feed.entries
         entries.sort(key=lambda x: x.get("published_parsed") or time.localtime(0), reverse=True)
         
         for entry in entries[:10]:
-            pub_date = entry.published[:16] if "published" in entry else "최근"
+            raw = entry.get("published_parsed")
+            # 💡 KST 시간 변환 로직 (UTC + 9시간) 적용
+            if raw:
+                dt_utc = datetime(*raw[:6])
+                dt_kst = dt_utc + timedelta(hours=9)
+                pub_date = dt_kst.strftime("%Y-%m-%d %H:%M (KST)")
+            else:
+                pub_date = "날짜/시간 미상"
+            
             st.markdown(f"📍 [{entry.title}]({entry.link})  `[{pub_date}]`")
             st.write("")
+

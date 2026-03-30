@@ -4,6 +4,10 @@ import pandas as pd
 import os
 import time
 
+# --- 위키백과 스크래핑 차단 방지용 SSL 우회 ---
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
+
 # ==========================================
 # 1. 기본 설정 및 데이터 로드 함수
 # ==========================================
@@ -19,7 +23,7 @@ def get_sp500_tickers():
         tickers = table['Symbol'].tolist()
         # 야후 파이낸스 형식에 맞게 특수기호 변환 (예: BRK.B -> BRK-B)
         return [ticker.replace('.', '-') for ticker in tickers]
-    except:
+    except Exception as e:
         # 스크래핑 실패 시 비상용 우량주 리스트 반환
         return ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'BRK-B', 'JNJ', 'JPM']
 
@@ -47,7 +51,7 @@ def check_market_filter():
         spy = yf.Ticker("SPY").history(period="1y")
         spy['MA200'] = spy['Close'].rolling(200).mean()
         return spy['Close'].iloc[-1] > spy['MA200'].iloc[-1]
-    except: return True # 에러 시 기본적으로 매매 허용
+    except: return True
 
 @st.cache_data(ttl=3600)
 def analyze_ticker(ticker):
@@ -100,7 +104,7 @@ col_u2.metric("현재 계좌 위험도", f"{current_total_units * (risk_per_unit
 st.divider()
 
 # --- 탭 구성 ---
-tab1, tab2 = st.tabs(["🔭 1. S&P 500 돌파 스캐너", "📋 2. 오늘의 Action (포지션 관리)"])
+tab1, tab2 = st.tabs(["🔭 1. S&P 500 돌파 스캐너", "📋 2. 포지션 관리 (Action)"])
 
 # ------------------------------------------
 # 탭 1: 스캐너 로직
@@ -117,7 +121,6 @@ with tab1:
         found_stocks = []
         
         for i, tkr in enumerate(TICKERS):
-            # 진행 상태 업데이트
             my_bar.progress((i + 1) / len(TICKERS), text=f"[{i+1}/{len(TICKERS)}] {tkr} 분석 중...")
             
             data = analyze_ticker(tkr)
@@ -132,7 +135,7 @@ with tab1:
                             "Ticker": tkr, "Price": data['Close'], "N": n_val, "Rec_Shares": unit_shares
                         })
         
-        my_bar.empty() # 스캔 완료 후 바 숨기기
+        my_bar.empty()
         
         if found_stocks:
             st.success(f"🎉 **{len(found_stocks)}개의 돌파 종목을 발견했습니다!**")
@@ -158,13 +161,30 @@ with tab1:
             st.info("💤 오늘은 55일 신고가를 돌파한 종목이 없습니다. 관망하세요.")
 
 # ------------------------------------------
-# 탭 2: 포지션 관리 및 행동 지침
+# 탭 2: 포지션 관리 및 수동 등록
 # ------------------------------------------
 with tab2:
     st.subheader("📋 내 보유 종목 현황")
     
+    # --- 수동 등록 UI 추가 ---
+    with st.expander("➕ 수동으로 내 보유 종목 등록하기"):
+        with st.form("manual_add_form", clear_on_submit=True):
+            new_tkr = st.text_input("종목 코드 (예: AAPL)").upper()
+            new_price = st.number_input("나의 체결 평단가 ($)", min_value=0.0)
+            new_units = st.number_input("현재 보유 Unit 수", min_value=1, max_value=3, value=1)
+            
+            if st.form_submit_button("포지션 수동 등록"):
+                if current_total_units + new_units > MAX_TOTAL_UNITS:
+                    st.error("총 Unit 한도(10 U)를 초과합니다!")
+                elif new_tkr in st.session_state.positions:
+                    st.warning("이미 등록된 종목입니다.")
+                else:
+                    st.session_state.positions[new_tkr] = {'EntryPrice': new_price, 'Units': new_units, 'Highest': new_price}
+                    save_data(st.session_state.positions)
+                    st.rerun()
+
     if not st.session_state.positions:
-        st.info("보유 중인 종목이 없습니다. 스캐너를 돌려 1 Unit을 매수해 보세요.")
+        st.info("보유 중인 종목이 없습니다. 스캐너를 돌리거나 수동으로 등록해 보세요.")
     else:
         for tkr, pos in list(st.session_state.positions.items()):
             data = analyze_ticker(tkr)
@@ -175,7 +195,7 @@ with tab2:
             units = pos['Units']
             avg_entry = pos['EntryPrice']
             
-            # 트레일링 스탑을 위한 최고점 업데이트
+            # 트레일링 스탑 최고점 갱신
             if curr_price > pos.get('Highest', avg_entry):
                 st.session_state.positions[tkr]['Highest'] = curr_price
                 save_data(st.session_state.positions)

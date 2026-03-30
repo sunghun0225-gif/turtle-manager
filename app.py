@@ -2,11 +2,28 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import os
+import time
 
-# --- 1. 설정 및 데이터 관리 ---
-DB_FILE = 'portfolio_v2.csv'
-MAX_TOTAL_UNITS = 10  # 계좌 전체 최대 Unit 한도
-MAX_UNIT_PER_STOCK = 3 # 단일 종목 최대 Unit 한도
+# ==========================================
+# 1. 기본 설정 및 데이터 로드 함수
+# ==========================================
+DB_FILE = 'portfolio_v3.csv'
+MAX_TOTAL_UNITS = 10       # 계좌 전체 최대 Unit 한도
+MAX_UNIT_PER_STOCK = 3     # 단일 종목 최대 Unit 한도 (밸런스형)
+
+@st.cache_data(ttl=86400) # 하루 한 번만 위키백과에서 리스트를 갱신합니다.
+def get_sp500_tickers():
+    try:
+        url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+        table = pd.read_html(url)[0]
+        tickers = table['Symbol'].tolist()
+        # 야후 파이낸스 형식에 맞게 특수기호 변환 (예: BRK.B -> BRK-B)
+        return [ticker.replace('.', '-') for ticker in tickers]
+    except:
+        # 스크래핑 실패 시 비상용 우량주 리스트 반환
+        return ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'BRK-B', 'JNJ', 'JPM']
+
+TICKERS = get_sp500_tickers()
 
 def load_data():
     if os.path.exists(DB_FILE):
@@ -21,23 +38,21 @@ def save_data(positions):
     else:
         if os.path.exists(DB_FILE): os.remove(DB_FILE)
 
-# --- 2. 시장 필터(SPY) 확인 함수 ---
-@st.cache_data(ttl=3600) # 1시간 동안 결과 캐싱 (속도 향상)
+# ==========================================
+# 2. 분석 엔진 (시장 필터 및 종목 지표)
+# ==========================================
+@st.cache_data(ttl=3600)
 def check_market_filter():
     try:
         spy = yf.Ticker("SPY").history(period="1y")
         spy['MA200'] = spy['Close'].rolling(200).mean()
-        curr_close = spy['Close'].iloc[-1]
-        ma200 = spy['MA200'].iloc[-1]
-        return curr_close > ma200, curr_close, ma200
-    except:
-        return True, 0, 0 # 에러 시 기본적으로 매매 허용
+        return spy['Close'].iloc[-1] > spy['MA200'].iloc[-1]
+    except: return True # 에러 시 기본적으로 매매 허용
 
-# --- 3. 개별 종목 분석 함수 ---
 @st.cache_data(ttl=3600)
 def analyze_ticker(ticker):
     try:
-        df = yf.Ticker(ticker).history(period="1y")
+        df = yf.Ticker(ticker).history(period="6mo")
         if len(df) < 60: return None
         
         # N(ATR 20), 55일 고점, 20일 저점 계산
@@ -49,146 +64,160 @@ def analyze_ticker(ticker):
         df['High55'] = df['High'].rolling(55).max().shift(1)
         df['Low20'] = df['Low'].rolling(20).min().shift(1)
         
-        return df.iloc[-1] # 가장 최근(오늘 아침) 데이터 반환
-    except:
-        return None
+        return df.iloc[-1]
+    except: return None
 
 # ==========================================
-# 🖥️ 앱 UI 시작
+# 3. 앱 UI 및 메인 로직
 # ==========================================
-st.set_page_config(page_title="Turtle Manager Pro", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle System V3", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state:
     st.session_state.positions = load_data()
 
-# --- 사이드바: 자금 및 리스크 설정 ---
+# --- 사이드바 ---
 st.sidebar.header("⚙️ 리스크 설정")
 total_capital = st.sidebar.number_input("운용 시드머니 (₩)", min_value=1000000, value=2000000, step=500000)
 risk_per_unit = st.sidebar.slider("1 Unit 당 위험 감수율 (%)", 1.0, 5.0, 2.0, 0.5) / 100
+exchange_rate = st.sidebar.number_input("현재 환율 (₩/$)", min_value=1000, value=1350, step=10)
 
-st.sidebar.caption(f"💡 1회 매매 시 감수 위험액: ₩ {int(total_capital * risk_per_unit):,}")
+st.sidebar.caption(f"💡 1회 매수 시 감수 위험액: ₩ {int(total_capital * risk_per_unit):,}")
 
-# --- 메인 대시보드: 리스크 신호등 ---
-st.title("🐢 Turtle Manager Pro")
+st.title("🐢 Turtle System V3")
 
-# 1. 시장 필터 상태
-is_bull_market, spy_price, spy_ma200 = check_market_filter()
-if is_bull_market:
-    st.success(f"🟢 **시장 필터 통과 (대세 상승장)** | SPY가 200일선 위에 있습니다. (신규 진입 가능)")
-else:
-    st.error(f"🔴 **시장 필터 경고 (대세 하락장)** | SPY가 200일선 아래에 있습니다! **신규 진입을 멈추고 현금을 보호하세요.**")
+# --- 시장 필터 및 계좌 위험도 ---
+is_bull_market = check_market_filter()
+if is_bull_market: 
+    st.success("🟢 **시장 필터 통과 (대세 상승장)** | SPY가 200일선 위에 있어 신규 진입이 가능합니다.")
+else: 
+    st.error("🔴 **시장 필터 경고 (대세 하락장)** | SPY가 200일선 아래에 있습니다. 신규 진입을 멈추세요.")
 
-# 2. 계좌 리스크 한도 현황
 current_total_units = sum([pos['Units'] for pos in st.session_state.positions.values()])
-current_risk_pct = current_total_units * (risk_per_unit * 100)
-max_risk_pct = MAX_TOTAL_UNITS * (risk_per_unit * 100)
-
-col1, col2 = st.columns(2)
-col1.metric("사용 중인 Total Units", f"{current_total_units} / {MAX_TOTAL_UNITS} U")
-col2.metric("현재 계좌 위험도 (Risk)", f"{current_risk_pct:.1f}%", f"한도: {max_risk_pct:.1f}%", delta_color="off")
-
-if current_total_units >= MAX_TOTAL_UNITS:
-    st.warning("⚠️ **총 Unit 한도 초과!** 새로운 종목을 매수하거나 불타기를 할 수 없습니다.")
+col_u1, col_u2 = st.columns(2)
+col_u1.metric("사용 중인 Total Units", f"{current_total_units} / {MAX_TOTAL_UNITS} U")
+col_u2.metric("현재 계좌 위험도", f"{current_total_units * (risk_per_unit * 100):.1f}%")
 
 st.divider()
 
-# --- 포지션 신규 등록 ---
-with st.expander("➕ 새로운 매수 신호(55일 신고가) 등록"):
-    with st.form("add_form", clear_on_submit=True):
-        new_tkr = st.text_input("종목 코드 (Ticker)").upper()
-        new_price = st.number_input("진입 체결가 ($)", min_value=0.0)
-        
-        submitted = st.form_submit_button("1 Unit 매수 등록")
-        if submitted and new_tkr:
-            if not is_bull_market:
-                st.error("하락장입니다! SPY 필터에 의해 신규 진입이 차단되었습니다.")
-            elif current_total_units >= MAX_TOTAL_UNITS:
-                st.error("계좌의 총 Unit 한도(10 U)가 꽉 찼습니다!")
-            elif new_tkr in st.session_state.positions:
-                st.warning("이미 보유 중인 종목입니다. 아래 관리 카드에서 '불타기'를 이용하세요.")
-            else:
-                st.session_state.positions[new_tkr] = {'EntryPrice': new_price, 'Units': 1, 'Highest': new_price}
-                save_data(st.session_state.positions)
-                st.rerun()
+# --- 탭 구성 ---
+tab1, tab2 = st.tabs(["🔭 1. S&P 500 돌파 스캐너", "📋 2. 오늘의 Action (포지션 관리)"])
 
-# --- 보유 종목 관리 (오늘의 Action) ---
-st.subheader("📋 포지션 관리 및 오늘의 행동 지침")
-
-if not st.session_state.positions:
-    st.info("현재 보유 중인 종목이 없습니다. 스캐너에서 55일 신고가 종목을 찾아 등록하세요.")
-else:
-    for tkr, pos in list(st.session_state.positions.items()):
-        data = analyze_ticker(tkr)
-        if data is None: continue
-        
-        curr_price = data['Close']
-        n_val = data['N']
-        units = pos['Units']
-        avg_entry = pos['EntryPrice']
-        
-        # 트레일링 스탑을 위한 최고점 업데이트
-        if curr_price > pos.get('Highest', avg_entry):
-            st.session_state.positions[tkr]['Highest'] = curr_price
-            save_data(st.session_state.positions)
+# ------------------------------------------
+# 탭 1: 스캐너 로직
+# ------------------------------------------
+with tab1:
+    st.subheader("🔍 55일 신고가 돌파 종목 찾기")
+    st.write(f"S&P 500 전체 종목({len(TICKERS)}개)을 스캔합니다. (약 1~2분 소요)")
+    
+    if st.button("🚀 스캐너 작동", type="primary"):
+        if not is_bull_market:
+            st.warning("현재 하락장입니다. 스캐너 결과가 나오더라도 매수는 권장하지 않습니다.")
             
-        highest = pos.get('Highest', avg_entry)
-
-        # 1 Unit 권장 주식 수 계산 (환율 1350원 가정)
-        unit_shares = int((total_capital * risk_per_unit) / (n_val * 1350)) if n_val > 0 else 0
+        my_bar = st.progress(0, text="종목 데이터 분석을 시작합니다...")
+        found_stocks = []
         
-        # 청산 조건 계산
-        stop_loss = avg_entry - (2 * n_val)
-        trailing_stop = highest - (3 * n_val)
-        exit_price = max(stop_loss, trailing_stop)
-        donchian_exit = data['Low20']
-        
-        # 피라미딩(불타기) 조건 계산
-        next_add_price = avg_entry + (0.5 * n_val)
-
-        # --- 상태 카드 UI ---
-        with st.container(border=True):
-            c_title, c_del = st.columns([4, 1])
-            c_title.markdown(f"### **{tkr}** ({units} Unit 보유 중)")
-            if c_del.button("종료(삭제)", key=f"del_{tkr}"):
-                del st.session_state.positions[tkr]
-                save_data(st.session_state.positions)
-                st.rerun()
-
-            c1, c2, c3 = st.columns(3)
-            c1.metric("현재가 ($)", f"{curr_price:.2f}")
-            c2.metric("내 평단가 ($)", f"{avg_entry:.2f}")
-            c3.metric("1 Unit 권장량", f"{unit_shares} 주", f"N={n_val:.2f}")
-
-            # 🚨 오늘 아침의 행동 지침 판별 🚨
-            action_msg = "✅ **홀딩 (관망)**: 추세가 진행 중입니다."
-            action_color = "normal"
+        for i, tkr in enumerate(TICKERS):
+            # 진행 상태 업데이트
+            my_bar.progress((i + 1) / len(TICKERS), text=f"[{i+1}/{len(TICKERS)}] {tkr} 분석 중...")
             
-            if curr_price < exit_price or curr_price < donchian_exit:
-                action_msg = f"🚨 **즉시 전량 매도 (청산)**: 방어선(${max(exit_price, donchian_exit):.2f})이 깨졌습니다!"
-                st.error(action_msg)
-            elif curr_price >= next_add_price and units < MAX_UNIT_PER_STOCK:
-                action_msg = f"🔥 **피라미딩 (불타기) 찬스!**: 가격이 충분히 올랐습니다. 1 Unit 추가 매수를 권장합니다."
-                st.success(action_msg)
-                
-                # 불타기 버튼
-                if st.button(f"1 Unit 추가 매수 반영 (현재가 ${curr_price:.2f})", key=f"add_{tkr}"):
-                    if current_total_units >= MAX_TOTAL_UNITS:
-                        st.error("총 Unit 한도 초과로 추가 매수할 수 없습니다.")
+            data = analyze_ticker(tkr)
+            if data is not None:
+                # 55일 신고가 돌파 확인
+                if data['Close'] > data['High55']:
+                    n_val = data['N']
+                    unit_shares = int((total_capital * risk_per_unit) / (n_val * exchange_rate)) if n_val > 0 else 0
+                    
+                    if unit_shares > 0:
+                        found_stocks.append({
+                            "Ticker": tkr, "Price": data['Close'], "N": n_val, "Rec_Shares": unit_shares
+                        })
+        
+        my_bar.empty() # 스캔 완료 후 바 숨기기
+        
+        if found_stocks:
+            st.success(f"🎉 **{len(found_stocks)}개의 돌파 종목을 발견했습니다!**")
+            for stock in found_stocks:
+                tkr = stock['Ticker']
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns([2, 2, 2])
+                    c1.markdown(f"### {tkr}")
+                    c2.metric("현재가", f"${stock['Price']:.2f}")
+                    c3.metric("권장 매수량", f"{stock['Rec_Shares']} 주")
+                    
+                    if tkr in st.session_state.positions:
+                        st.info("✅ 이미 보유 중인 종목입니다.")
                     else:
-                        # 평단가 재계산
-                        new_avg = ((avg_entry * units) + curr_price) / (units + 1)
-                        st.session_state.positions[tkr]['EntryPrice'] = new_avg
-                        st.session_state.positions[tkr]['Units'] += 1
-                        save_data(st.session_state.positions)
-                        st.rerun()
-            else:
-                st.info(action_msg)
+                        if st.button(f"➕ 내 포지션에 등록", key=f"add_scan_{tkr}"):
+                            if current_total_units >= MAX_TOTAL_UNITS:
+                                st.error("계좌 총 Unit 한도(10 U) 초과로 등록할 수 없습니다.")
+                            else:
+                                st.session_state.positions[tkr] = {'EntryPrice': stock['Price'], 'Units': 1, 'Highest': stock['Price']}
+                                save_data(st.session_state.positions)
+                                st.rerun()
+        else:
+            st.info("💤 오늘은 55일 신고가를 돌파한 종목이 없습니다. 관망하세요.")
+
+# ------------------------------------------
+# 탭 2: 포지션 관리 및 행동 지침
+# ------------------------------------------
+with tab2:
+    st.subheader("📋 내 보유 종목 현황")
+    
+    if not st.session_state.positions:
+        st.info("보유 중인 종목이 없습니다. 스캐너를 돌려 1 Unit을 매수해 보세요.")
+    else:
+        for tkr, pos in list(st.session_state.positions.items()):
+            data = analyze_ticker(tkr)
+            if data is None: continue
+            
+            curr_price = data['Close']
+            n_val = data['N']
+            units = pos['Units']
+            avg_entry = pos['EntryPrice']
+            
+            # 트레일링 스탑을 위한 최고점 업데이트
+            if curr_price > pos.get('Highest', avg_entry):
+                st.session_state.positions[tkr]['Highest'] = curr_price
+                save_data(st.session_state.positions)
+            highest = pos.get('Highest', avg_entry)
+            
+            # 지표 계산
+            stop_loss = avg_entry - (2 * n_val)
+            trailing_stop = highest - (3 * n_val)
+            exit_price = max(stop_loss, trailing_stop)
+            donchian_exit = data['Low20']
+            next_add_price = avg_entry + (0.5 * n_val)
+
+            # --- 카드 UI ---
+            with st.container(border=True):
+                c_title, c_del = st.columns([4, 1])
+                c_title.markdown(f"#### **{tkr}** ({units} U)")
+                if c_del.button("매매 종료", key=f"del_pos_{tkr}"):
+                    del st.session_state.positions[tkr]
+                    save_data(st.session_state.positions)
+                    st.rerun()
+
+                c1, c2, c3 = st.columns(3)
+                c1.metric("현재가 ($)", f"{curr_price:.2f}")
+                c2.metric("내 평단가 ($)", f"{avg_entry:.2f}")
                 
-            with st.expander("세부 방어선 및 지표 확인"):
-                st.write(f"- 1차 손절선 (-2N): **${stop_loss:.2f}**")
-                st.write(f"- 트레일링 스탑 (-3N): **${trailing_stop:.2f}** (최고점 ${highest:.2f} 기준)")
-                st.write(f"- 20일 저점 이탈선: **${donchian_exit:.2f}**")
-                if units < MAX_UNIT_PER_STOCK:
-                    st.write(f"- 다음 불타기 목표가 (+0.5N): **${next_add_price:.2f}**")
+                profit_pct = (curr_price / avg_entry) - 1
+                c3.metric("수익률", f"{profit_pct:.2%}")
+
+                # 🚨 행동 지침 (Action) 🚨
+                if curr_price < exit_price or curr_price < donchian_exit:
+                    st.error(f"🚨 **즉시 전량 매도 (손절/익절)** | 방어선(${max(exit_price, donchian_exit):.2f})이 깨졌습니다!")
+                elif curr_price >= next_add_price and units < MAX_UNIT_PER_STOCK:
+                    st.success(f"🔥 **불타기 찬스!** | 가격이 충분히 올랐습니다. 1 Unit 추가 매수를 권장합니다.")
+                    
+                    unit_shares = int((total_capital * risk_per_unit) / (n_val * exchange_rate)) if n_val > 0 else 0
+                    if st.button(f"{unit_shares}주 추가 매수 반영", key=f"add_pos_{tkr}"):
+                        if current_total_units >= MAX_TOTAL_UNITS:
+                            st.error("총 Unit 한도 초과!")
+                        else:
+                            st.session_state.positions[tkr]['EntryPrice'] = ((avg_entry * units) + curr_price) / (units + 1)
+                            st.session_state.positions[tkr]['Units'] += 1
+                            save_data(st.session_state.positions)
+                            st.rerun()
                 else:
-                    st.write(f"- 🛑 개별 종목 최대 Unit({MAX_UNIT_PER_STOCK} U) 도달. 더 이상 추가 매수 불가.")
+                    st.info(f"✅ **홀딩 (관망)** | 다음 불타기 목표가: ${next_add_price:.2f}")

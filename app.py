@@ -109,7 +109,6 @@ exchange_rate = st.sidebar.number_input("현재 환율 (₩/$)", min_value=1000,
 st.sidebar.divider()
 st.sidebar.header("💾 데이터 복구 (업로드)")
 uploaded_file = st.sidebar.file_uploader("백업 CSV 선택", type=['csv'])
-
 if uploaded_file is not None:
     if st.sidebar.button("데이터 복구 실행", type="primary"):
         try:
@@ -121,7 +120,6 @@ if uploaded_file is not None:
             st.session_state.positions = restored
             save_data(st.session_state.positions)
             st.sidebar.success("✅ 복구 완료!")
-            time.sleep(1)
             st.rerun()
         except: st.sidebar.error("❌ 복구 실패")
 
@@ -176,7 +174,7 @@ with tab1:
                         st.rerun()
 
 # ------------------------------------------
-# 탭 2: 매니저 및 차트 시각화
+# 탭 2: 매니저 및 직관적 입력 UI
 # ------------------------------------------
 with tab2:
     st.subheader("📋 내 보유 종목 현황")
@@ -207,51 +205,64 @@ with tab2:
 
             with st.container(border=True):
                 c_title, c_del = st.columns([4, 1])
-                c_title.markdown(f"#### **{tkr}** ({total_shares}주)")
+                c_title.markdown(f"#### **{tkr}** (총 {total_shares}주)")
                 if c_del.button("매매 종료", key=f"del_pos_{tkr}"):
                     del st.session_state.positions[tkr]
                     save_data(st.session_state.positions)
                     st.rerun()
 
-                # 시나리오 판별 및 아이콘 교체
+                # 시나리오 알림
                 if curr_price < stop_loss:
-                    st.error(f"🛑 **[상황 A: 진입 실패]** 초기 방어선(${stop_loss:.2f}) 이탈. 손절하세요!")
+                    st.error(f"🛑 **[상황 A]** 초기 방어선(${stop_loss:.2f}) 이탈!")
                 elif curr_price < trailing_stop:
-                    st.error(f"💰 **[상황 C: 추세 종료]** 고점 추적 익절선(${trailing_stop:.2f}) 이탈. 익절하세요!")
+                    st.error(f"💰 **[상황 C]** 익절선(${trailing_stop:.2f}) 이탈!")
                 elif curr_price < donchian_exit:
-                    st.error(f"⚠️ **[상황 D: 횡보/하락]** 20일 신저가(${donchian_exit:.2f}) 붕괴. 매도하세요!")
+                    st.error(f"⚠️ **[상황 D]** 20일 신저가(${donchian_exit:.2f}) 붕괴!")
                 elif curr_price >= next_add_price and pos['Units'] < MAX_UNIT_PER_STOCK:
-                    st.success(f"🚀 **[상황 B: 추세 탑승]** 목표가(${next_add_price:.2f}) 돌파. 1 Unit 추가 매수!")
-                    unit_shares = int((total_capital * risk_per_unit) / (n_val * exchange_rate)) if n_val > 0 else 0
-                    if st.button(f"👉 {unit_shares}주 추가 기록", key=f"add_pos_{tkr}"):
-                        pos['History'].append({'price': curr_price, 'shares': unit_shares})
-                        pos['Units'] += 1
-                        save_data(st.session_state.positions)
-                        st.rerun()
+                    st.success(f"🚀 **[상황 B]** 불타기 목표가(${next_add_price:.2f}) 돌파!")
                 else:
-                    st.info(f"✅ **[안정권]** 현재가 ${curr_price:.2f} | 평단 ${avg_entry:.2f}")
+                    st.info(f"✅ **[순항 중]** 평단 ${avg_entry:.2f} | 수익률 {(curr_price/avg_entry)-1:.2%}")
 
-                with st.expander("📈 지표 통합 차트 및 세부 수치 확인"):
-                    st.markdown(f"**현재 변동성(1N):** ${n_val:.2f} | **최고가:** ${highest:.2f}")
+                # 💡 직관적 수기 입력 섹션
+                with st.expander("📝 매수 기록 직접 입력/수정"):
+                    st.caption("실제 체결된 단가와 수량을 입력하세요.")
                     
-                    # 차트 데이터 구성 (모든 지표 선 추가)
+                    # 1. 입력 폼 (가로 배치)
+                    with st.container():
+                        col_in1, col_in2 = st.columns(2)
+                        in_p = col_in1.number_input("매수 단가 ($)", min_value=0.0, format="%.2f", key=f"p_{tkr}", value=curr_price)
+                        in_s = col_in2.number_input("매수 수량 (주)", min_value=1, step=1, key=f"s_{tkr}")
+                        
+                        btn_c1, btn_c2 = st.columns(2)
+                        if btn_c1.button("✅ 기록 추가", key=f"btn_add_{tkr}", use_container_width=True):
+                            pos['History'].append({'price': in_p, 'shares': in_s})
+                            pos['Units'] = min(MAX_UNIT_PER_STOCK, len(pos['History']))
+                            save_data(st.session_state.positions)
+                            st.rerun()
+                            
+                        if btn_c2.button("🔙 최근 기록 삭제", key=f"btn_undo_{tkr}", use_container_width=True, type="secondary"):
+                            if len(pos['History']) > 1:
+                                pos['History'].pop()
+                                pos['Units'] = len(pos['History'])
+                                save_data(st.session_state.positions)
+                                st.rerun()
+                            else:
+                                st.warning("첫 번째 기록은 삭제할 수 없습니다. '매매 종료'를 이용하세요.")
+
+                    st.divider()
+                    # 2. 현재 내역 테이블
+                    st.markdown("**현재 매수 내역**")
+                    if history:
+                        hist_df = pd.DataFrame(history)
+                        hist_df.columns = ['단가 ($)', '수량 (주)']
+                        st.table(hist_df.style.format({'단가 ($)': '{:.2f}'}))
+
+                with st.expander("📊 지표 차트 확인"):
                     chart_df = data[['Close', 'Low20']].copy()
-                    chart_df['초기방어선(-2N)'] = stop_loss
-                    chart_df['고점추적익절(-3N)'] = trailing_stop
-                    chart_df['불타기목표(+0.5N)'] = next_add_price if pos['Units'] < MAX_UNIT_PER_STOCK else None
-                    
+                    chart_df['초기방어선'] = stop_loss
+                    chart_df['익절선'] = trailing_stop
+                    chart_df['불타기선'] = next_add_price if pos['Units'] < MAX_UNIT_PER_STOCK else None
                     st.line_chart(chart_df)
-                    st.caption("파란선: 현재가 | 빨간선: 손절/익절선 | 노란선: 불타기선")
-                    
-                    c_h1, c_h2 = st.columns(2)
-                    with c_h1:
-                        st.caption("매수 내역")
-                        st.write(pd.DataFrame(history))
-                    with c_h2:
-                        st.caption("실시간 수치")
-                        st.write(f"평단: ${avg_entry:.2f}")
-                        st.write(f"손절: ${stop_loss:.2f}")
-                        st.write(f"익절: ${trailing_stop:.2f}")
 
         st.divider()
         if st.session_state.positions:

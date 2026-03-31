@@ -193,7 +193,7 @@ def get_stock_news(query_name, market="US"):
 # ==========================================
 # 4. 메인 UI 및 세션 초기화
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.21", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.22", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state: st.session_state.positions = load_data()
 if "my_tickers_us" not in st.session_state: st.session_state["my_tickers_us"] = []
@@ -217,7 +217,7 @@ if uploaded_file is not None and st.sidebar.button("데이터 즉시 복구", ty
     except: st.sidebar.error("❌ 파일 형식 오류 (CSV 파일이 맞는지 확인해주세요)")
 
 # --- 메인 타이틀 ---
-st.title("🐢 Turtle System Pro V7.21")
+st.title("🐢 Turtle System Pro V7.22")
 
 is_bull, spy_val, ma200_val, is_trending_up = check_market_filter()
 if is_bull:
@@ -288,6 +288,11 @@ with tab2:
         profit_pct = (latest['Close'] / avg_entry) - 1 if avg_entry > 0 else 0
         if latest['Close'] > pos['Highest']: pos['Highest'] = latest['Close']; save_data(st.session_state.positions)
         
+        # 추가 매수 권장 수량 실시간 계산 (공통)
+        risk_shares = int((total_capital * risk_per_unit) / (latest['N'] * exchange_rate)) if latest['N'] > 0 else 1
+        cash_shares = int((total_capital / MAX_TOTAL_UNITS) / (latest['Close'] * exchange_rate))
+        add_shares = max(1, min(risk_shares, cash_shares))
+
         with st.container(border=True):
             c_t, c_d = st.columns([4, 1])
             c_t.markdown(f"#### **{tkr}** :{('blue' if '터틀' in strat else 'red')}[({strat})] - {total_shares}주")
@@ -300,16 +305,10 @@ with tab2:
             else:
                 stop, trail, donchian, add = avg_entry - 2*latest['N'], pos['Highest'] - 3*latest['N'], latest['Low20'], avg_entry + 0.5*latest['N']
                 
-                # 💡 추가 매수 권장 수량 실시간 계산 (현금 한도 필터 적용)
-                risk_shares = int((total_capital * risk_per_unit) / (latest['N'] * exchange_rate)) if latest['N'] > 0 else 1
-                cash_shares = int((total_capital / MAX_TOTAL_UNITS) / (latest['Close'] * exchange_rate))
-                add_shares = max(1, min(risk_shares, cash_shares))
-
                 if latest['Close'] < stop: st.error(f"🛑 **[상황 A]** 초기손실방어선(${stop:.2f}) 이탈!")
                 elif latest['Close'] < trail: st.error(f"💰 **[상황 C]** 최종추세이탈(${trail:.2f})!") 
                 elif latest['Close'] >= add and pos['Units'] < MAX_UNIT_PER_STOCK: 
-                    # 💡 불타기 시 추가 매수 수량 안내 적용
-                    st.success(f"🚀 **[상황 B]** 불타기(${add:.2f}) 돌파! 👉 **추가 매수 권장: {add_shares}주** (현재 {pos['Units']}/{MAX_UNIT_PER_STOCK} U)")
+                    st.success(f"🚀 **[상황 B]** 불타기(${add:.2f}) 돌파! 👉 **추가 매수 권장: {add_shares}주**")
                 elif latest['Close'] >= add and pos['Units'] >= MAX_UNIT_PER_STOCK:
                     st.success(f"🚀 **[상황 B]** 불타기(${add:.2f}) 돌파! (최대 보유 한도 도달로 관망)")
                 else: st.info(f"✅ 순항 중 (수익률: {profit_pct:.2%})")
@@ -334,7 +333,6 @@ with tab2:
                         {'val': add, 'name': '불타기', 'col': 'orange'}
                     ]
                 
-                # 💡 가격순 정렬하여 라벨이 선명하게 자신의 라인 위에 안착하도록 수정 (dy=-4 고정)
                 levels.sort(key=lambda x: x['val'], reverse=True)
                 
                 layers = [line]
@@ -342,6 +340,13 @@ with tab2:
                     layers.append(alt.Chart(pd.DataFrame({'y': [lv['val']]})).mark_rule(strokeDash=[5,5], color=lv['col']).encode(y='y:Q'))
                     layers.append(alt.Chart(pd.DataFrame({'Date': [chart_df['Date'].max()], 'y': [lv['val']], 't': [f"{lv['name']}: ${lv['val']:.2f}"]})).mark_text(align='left', dx=10, dy=-4, color=lv['col'], fontWeight='bold').encode(x='Date:T', y='y:Q', text='t:N'))
                 st.altair_chart(alt.layer(*layers).properties(height=350), use_container_width=True)
+                
+                # 💡 신규 추가: 차트 바로 아래에 불타기 예정 수량 브리핑 표시
+                if "터틀" in strat:
+                    if pos['Units'] < MAX_UNIT_PER_STOCK:
+                        st.info(f"💡 **불타기 영역 도달 시, 현재 보유기준 {add_shares}주 매수**")
+                    else:
+                        st.info(f"💡 **불타기 영역 도달 시, 최대 보유 한도({MAX_UNIT_PER_STOCK}U) 도달로 추가 매수 없음**")
                 
                 c1, c2 = st.columns(2)
                 in_p = c1.number_input("단가", min_value=0.0, format="%.2f", key=f"p_{tkr}", value=latest['Close'])
@@ -382,4 +387,3 @@ with tab5:
         raw = e.get("published_parsed")
         dt_kst = datetime(*raw[:6]) + timedelta(hours=9) if raw else None
         st.markdown(f"📍 [{e.title}]({e.link}) `[{dt_kst.strftime('%Y-%m-%d %H:%M (KST)') if dt_kst else '미상'}]`")
-

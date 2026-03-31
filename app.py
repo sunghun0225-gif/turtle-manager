@@ -370,4 +370,3 @@ with tab5:
         raw = e.get("published_parsed")
         dt_kst = datetime(*raw[:6]) + timedelta(hours=9) if raw else None
         st.markdown(f"📍 [{e.title}]({e.link}) `[{dt_kst.strftime('%Y-%m-%d %H:%M (KST)') if dt_kst else '미상'}]`")
-

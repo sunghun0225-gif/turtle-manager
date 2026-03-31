@@ -7,7 +7,7 @@ import requests
 import json
 import altair as alt
 import feedparser
-from datetime import datetime, timedelta # 💡 KST 시간 변환을 위해 timedelta 추가
+from datetime import datetime, timedelta
 
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -28,7 +28,7 @@ def get_sp500_tickers():
         html = requests.get(url, headers=headers).text
         table = pd.read_html(html)[0]
         tickers = table['Symbol'].tolist()
-        return [ticker.replace('.', '-') for ticker in tickers]
+        return [ticker.replace('.', '-') for tickers in tickers]
     except:
         return ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'BRK-B', 'JNJ', 'JPM']
 
@@ -179,12 +179,11 @@ def get_sec_filings(ticker: str, limit: int = 12):
         
         filings = []
         for i in range(len(forms)):
-            # 💡 KST 한국 시간 변환 로직 (UTC + 9시간)
             if i < len(acc_times) and acc_times[i]:
                 raw_dt = acc_times[i]
                 try:
                     dt_utc = datetime.strptime(raw_dt[:16], "%Y-%m-%dT%H:%M")
-                    dt_kst = dt_utc + timedelta(hours=9) # KST 변환
+                    dt_kst = dt_utc + timedelta(hours=9) 
                     display_date = dt_kst.strftime("%Y-%m-%d %H:%M (KST)")
                     sort_key = raw_dt
                 except:
@@ -214,7 +213,6 @@ def get_stock_news(query_name, market="US"):
         
         for entry in feed.entries[:20]: 
             raw = entry.get("published_parsed")
-            # 💡 KST 한국 시간 변환 로직 (UTC + 9시간)
             if raw:
                 dt_utc = datetime(*raw[:6])
                 dt_kst = dt_utc + timedelta(hours=9)
@@ -237,7 +235,7 @@ def get_stock_news(query_name, market="US"):
 # ==========================================
 # 4. 메인 UI 및 세션 초기화
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.16", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.17", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state: st.session_state.positions = load_data()
 if "my_tickers_us" not in st.session_state: st.session_state["my_tickers_us"] = []
@@ -262,7 +260,7 @@ if uploaded_file is not None:
         except: st.sidebar.error("❌ 파일 형식 오류")
 
 # --- 메인 타이틀 ---
-st.title("🐢 Turtle System Pro V7.16")
+st.title("🐢 Turtle System Pro V7.17")
 
 is_bull, spy_val, ma200_val, is_trending_up = check_market_filter()
 if is_bull:
@@ -349,9 +347,46 @@ with tab3:
                     save_data(st.session_state.positions); st.rerun()
 
 # ------------------------------------------
-# 탭 2: 통합 매니저
+# 탭 2: 통합 매니저 (💡 수기 등록 UI 추가됨)
 # ------------------------------------------
 with tab2:
+    # 💡 신규 기능: 스캐너를 거치지 않는 수기 등록 패널
+    with st.expander("✍️ 새로운 종목 수기 등록", expanded=False):
+        st.caption("스캐너를 거치지 않고 이미 보유 중인 종목을 직접 시스템에 등록합니다.")
+        m_c1, m_c2, m_c3, m_c4 = st.columns(4)
+        man_ticker = m_c1.text_input("티커 (예: AAPL)", key="man_tkr").upper()
+        man_strat = m_c2.selectbox("적용 전략", ["⚙️ 수동등록", "🚀 터틀-상승", "📉 낙폭-하강"], key="man_str")
+        man_price = m_c3.number_input("매수 단가 ($/원)", min_value=0.0, format="%.2f", key="man_prc")
+        man_shares = m_c4.number_input("매수 수량 (주)", min_value=1, step=1, key="man_shr")
+        
+        if st.button("➕ 수동 종목 등록", type="primary", use_container_width=True):
+            if man_ticker:
+                with st.spinner("티커 유효성 확인 중..."):
+                    test_data = analyze_ticker(man_ticker)
+                    if test_data is None:
+                        st.error(f"❌ '{man_ticker}'는 유효하지 않은 티커이거나 과거 데이터가 부족합니다.")
+                    elif man_ticker in st.session_state.positions:
+                        st.warning(f"⚠️ '{man_ticker}'는 이미 관리 중입니다. 아래 카드에서 내역을 추가하세요.")
+                    else:
+                        st.session_state.positions[man_ticker] = {
+                            'Units': 1, 
+                            'Highest': man_price, 
+                            'History': [{'price': man_price, 'shares': man_shares}], 
+                            'Strategy': man_strat
+                        }
+                        save_data(st.session_state.positions)
+                        st.success(f"✅ {man_ticker} 등록 완료!")
+                        time.sleep(0.5)
+                        st.rerun()
+            else:
+                st.warning("티커를 입력해주세요.")
+    
+    st.divider()
+
+    # 💡 기존 매니저 로직 유지
+    if not st.session_state.positions:
+        st.info("관리 중인 포지션이 없습니다. 스캐너나 수기 등록을 통해 종목을 추가하세요.")
+
     for tkr, pos in list(st.session_state.positions.items()):
         data = analyze_ticker(tkr)
         if data is None: continue
@@ -363,7 +398,8 @@ with tab2:
         if curr_price > pos['Highest']: pos['Highest'] = curr_price; save_data(st.session_state.positions)
 
         with st.container(border=True):
-            c_title, c_del = st.columns([4, 1]); color = "blue" if "터틀" in strat else "red"
+            c_title, c_del = st.columns([4, 1])
+            color = "gray" if "수동" in strat else ("blue" if "터틀" in strat else "red")
             c_title.markdown(f"#### **{tkr}** :{color}[({strat})] - {total_shares}주")
             if c_del.button("종료", key=f"del_{tkr}"): del st.session_state.positions[tkr]; save_data(st.session_state.positions); st.rerun()
 
@@ -484,7 +520,6 @@ with tab5:
         
         for entry in entries[:10]:
             raw = entry.get("published_parsed")
-            # 💡 KST 시간 변환 로직 (UTC + 9시간) 적용
             if raw:
                 dt_utc = datetime(*raw[:6])
                 dt_kst = dt_utc + timedelta(hours=9)

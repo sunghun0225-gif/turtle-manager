@@ -260,5 +260,93 @@ for tab, strat_name in zip([tab1, tab3], ["🚀 터틀-상승", "📉 낙폭-하
                 c1, c2, c3 = st.columns(3)
                 c1.write(f"### {s['Ticker']}"); c2.write(f"현재가: ${s['Price']:.2f}"); c3.write(f"권장: {s['Shares']}주")
                 if s['Ticker'] not in st.session_state.positions and st.button("➕ 등록", key=f"reg_{strat_name}_{s['Ticker']}", use_container_width=True):
-                    st.session_state.positions[s['Ticker']] = {'Units': 1, 'Highest': s['Price'], 'History
+                    st.session_state.positions[s['Ticker']] = {'Units': 1, 'Highest': s['Price'], 'History': [{'price': s['Price'], 'shares': s['Shares']}], 'Strategy': s['Strategy']}
+                    save_data(st.session_state.positions); st.rerun()
+
+# --- 탭 2: 통합 매니저 (수기 등록 기능 업그레이드) ---
+with tab2:
+    with st.expander("✍️ 보유 종목 수기 등록 (전략 선택)", expanded=False):
+        m1, m2, m3, m4 = st.columns(4)
+        m_tkr = m1.text_input("티커", key="m_tkr").upper()
+        # 💡 전략 선택지를 터틀과 낙폭 두 가지로만 구성
+        m_str = m2.selectbox("적용 전략", ["🚀 터틀-상승", "📉 낙폭-하강"], key="m_str")
+        m_prc = m3.number_input("단가", min_value=0.0, format="%.2f", key="m_prc")
+        m_shr = m4.number_input("수량", min_value=1, step=1, key=m_tkr+"_s")
+        if st.button("➕ 직접 등록 실행", type="primary", use_container_width=True):
+            if m_tkr and analyze_ticker(m_tkr) is not None:
+                st.session_state.positions[m_tkr] = {'Units': 1, 'Highest': m_prc, 'History': [{'price': m_prc, 'shares': m_shr}], 'Strategy': m_str}
+                save_data(st.session_state.positions); st.success(f"{m_tkr} 등록 완료!"); time.sleep(0.5); st.rerun()
+            else: st.error("유효한 티커를 입력하세요.")
+    st.divider()
+    if not st.session_state.positions: st.info("보유 포지션이 없습니다.")
+    for tkr, pos in list(st.session_state.positions.items()):
+        data = analyze_ticker(tkr)
+        if data is None: continue
+        latest = data.iloc[-1]; strat = pos.get('Strategy', '🚀 터틀-상승')
+        total_shares = sum(h['shares'] for h in pos['History'])
+        avg_entry = sum(h['price'] * h['shares'] for h in pos['History']) / total_shares if total_shares > 0 else 0
+        profit_pct = (latest['Close'] / avg_entry) - 1 if avg_entry > 0 else 0
+        if latest['Close'] > pos['Highest']: pos['Highest'] = latest['Close']; save_data(st.session_state.positions)
+        with st.container(border=True):
+            c_t, c_d = st.columns([4, 1])
+            c_t.markdown(f"#### **{tkr}** :{('blue' if '터틀' in strat else 'red')}[({strat})] - {total_shares}주")
+            if c_d.button("종료", key=f"ex_{tkr}"): del st.session_state.positions[tkr]; save_data(st.session_state.positions); st.rerun()
+            if "낙폭" in strat:
+                if profit_pct >= 0.05: st.success("💰 **수익실현 권장 (+5% 도달)**")
+                elif profit_pct <= -0.03: st.error("🛑 **손절 권장 (-3% 도달)**")
+                else: st.info(f"✅ 보유 중 (수익률: {profit_pct:.2%})")
+            else:
+                stop, trail, donchian, add = avg_entry - 2*latest['N'], pos['Highest'] - 3*latest['N'], latest['Low20'], avg_entry + 0.5*latest['N']
+                if latest['Close'] < stop: st.error(f"🛑 **[상황 A]** 방어선(${stop:.2f}) 이탈!")
+                elif latest['Close'] < trail: st.error(f"💰 **[상황 C]** 익절선(${trail:.2f}) 이탈!")
+                elif latest['Close'] >= add and pos['Units'] < MAX_UNIT_PER_STOCK: st.success(f"🚀 **[상황 B]** 불타기(${add:.2f}) 돌파!")
+                else: st.info(f"✅ 순항 중 (수익률: {profit_pct:.2%})")
+            with st.expander("📊 지표 차트 및 상세 관리"):
+                chart_df = data.reset_index()[['Date', 'Close']].tail(90)
+                base = alt.Chart(chart_df).encode(x=alt.X('Date:T', title=None))
+                line = base.mark_line(color='#1f77b4').encode(y=alt.Y('Close:Q', scale=alt.Scale(zero=False)))
+                levels = [{'val': avg_entry*1.05, 'name': '5% 익절', 'col': 'green'}, {'val': avg_entry*1.1, 'name': '10% 목표', 'col': 'blue'}, {'val': avg_entry*0.97, 'name': '3% 손절', 'col': 'red'}] if "낙폭" in strat else [{'val': stop, 'name': '손절(-2N)', 'col': 'red'}, {'val': trail, 'name': '익절(-3N)', 'col': 'green'}, {'val': add, 'name': '불타기', 'col': 'orange'}]
+                layers = [line]
+                for i, lv in enumerate(levels):
+                    layers.append(alt.Chart(pd.DataFrame({'y': [lv['val']]})).mark_rule(strokeDash=[5,5], color=lv['col']).encode(y='y:Q'))
+                    layers.append(alt.Chart(pd.DataFrame({'Date': [chart_df['Date'].max()], 'y': [lv['val']], 't': [f"{lv['name']}: ${lv['val']:.2f}"]})).mark_text(align='left', dx=10, dy=(i*18)-18, color=lv['col'], fontWeight='bold').encode(x='Date:T', y='y:Q', text='t:N'))
+                st.altair_chart(alt.layer(*layers).properties(height=350), use_container_width=True)
+                c1, c2 = st.columns(2)
+                in_p = c1.number_input("단가", min_value=0.0, format="%.2f", key=f"p_{tkr}", value=latest['Close'])
+                in_s = c2.number_input("수량", min_value=1, step=1, key=f"s_{tkr}")
+                b1, b2 = st.columns(2)
+                if b1.button("✅ 추가", key=f"a_{tkr}", use_container_width=True):
+                    pos['History'].append({'price': in_p, 'shares': in_s}); pos['Units'] = min(MAX_UNIT_PER_STOCK, len(pos['History'])); save_data(st.session_state.positions); st.rerun()
+                if b2.button("🔙 삭제", key=f"u_{tkr}", use_container_width=True) and len(pos['History']) > 1:
+                    pos['History'].pop(); pos['Units'] = len(pos['History']); save_data(st.session_state.positions); st.rerun()
+                st.markdown("**매수 내역**"); st.table(pd.DataFrame(pos['History']).style.format({'price': '{:.2f}'}))
+    if st.session_state.positions:
+        csv = pd.DataFrame([{'Ticker': k, **v, 'History': json.dumps(v['History'])} for k, v in st.session_state.positions.items()]).to_csv(index=False).encode('utf-8-sig')
+        st.download_button(f"💾 전체 통합 백업 ({datetime.now().strftime('%y%m%d')})", csv, f"{datetime.now().strftime('%y%m%d')}_pos.csv", "text/csv", use_container_width=True)
+
+# --- 탭 4 & 5: 뉴스 및 공시 (KST/최신순 보존) ---
+with tab4:
+    st.subheader("🇺🇸 미국 종목 분석")
+    t_in = st.text_input("티커 입력", key="us_in").upper()
+    if st.button("분석 시작", key="start_us") and t_in:
+        p, info, _ = fetch_ticker_cached(t_in)
+        if p:
+            st.info(f"**[{t_in}]** 현재가: ${p:.2f}")
+            with st.expander("📋 SEC 실시간 공시 (KST)", expanded=True):
+                filings, _ = get_sec_filings(t_in)
+                if filings:
+                    for f in filings:
+                        ca, cb, cc = st.columns([3, 2, 2])
+                        ca.write(f"**{f['label']}**"); cb.caption(f["date"]); cc.markdown(f"[원문]({f['url']})")
+            with st.expander("📰 뉴스 & 홈페이지"):
+                for n in get_stock_news(t_in): st.markdown(f"- [{n['title']}]({n['link']}) `[{n['date']}]`")
+with tab5:
+    st.subheader("🌍 세계 경제 뉴스 (KST)")
+    if st.button("🔄 새로고침"): st.rerun()
+    feed = feedparser.parse("https://news.google.com/rss/search?q=global+economy+market+when:24h&hl=en-US&gl=US&ceid=US:en")
+    entries = feed.entries; entries.sort(key=lambda x: x.get("published_parsed") or time.localtime(0), reverse=True)
+    for e in entries[:10]:
+        raw = e.get("published_parsed")
+        dt_kst = datetime(*raw[:6]) + timedelta(hours=9) if raw else None
+        st.markdown(f"📍 [{e.title}]({e.link}) `[{dt_kst.strftime('%Y-%m-%d %H:%M (KST)') if dt_kst else '미상'}]`")
 

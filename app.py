@@ -193,7 +193,7 @@ def get_stock_news(query_name, market="US"):
 # ==========================================
 # 4. 메인 UI 및 세션 초기화
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.19", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.20", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state: st.session_state.positions = load_data()
 if "my_tickers_us" not in st.session_state: st.session_state["my_tickers_us"] = []
@@ -208,16 +208,17 @@ risk_per_unit = st.sidebar.slider("1 Unit 당 위험 감수율 (%)", 1.0, 5.0, 2
 exchange_rate = st.sidebar.number_input("현재 환율 (₩/$)", min_value=1000, value=1450, step=10)
 
 st.sidebar.divider()
-uploaded_file = st.sidebar.file_uploader("📂 백업 CSV 업로드", type=['csv'])
+# 💡 안드로이드 파일 탐색기 오류 해결을 위해 type=['csv'] 제한 속성 제거
+uploaded_file = st.sidebar.file_uploader("📂 백업 CSV 업로드")
 if uploaded_file is not None and st.sidebar.button("데이터 즉시 복구", type="primary"):
     try:
         df = pd.read_csv(uploaded_file)
         st.session_state.positions = {row['Ticker']: {'Units': int(row['Units']), 'Highest': float(row['Highest']), 'History': json.loads(row['History']), 'Strategy': row['Strategy']} for _, row in df.iterrows()}
         save_data(st.session_state.positions); st.sidebar.success("✅ 복구 완료!"); st.rerun()
-    except: st.sidebar.error("❌ 파일 형식 오류")
+    except: st.sidebar.error("❌ 파일 형식 오류 (CSV 파일이 맞는지 확인해주세요)")
 
 # --- 메인 타이틀 ---
-st.title("🐢 Turtle System Pro V7.19")
+st.title("🐢 Turtle System Pro V7.20")
 
 is_bull, spy_val, ma200_val, is_trending_up = check_market_filter()
 if is_bull:
@@ -299,8 +300,8 @@ with tab2:
                 else: st.info(f"✅ 보유 중 (수익률: {profit_pct:.2%})")
             else:
                 stop, trail, donchian, add = avg_entry - 2*latest['N'], pos['Highest'] - 3*latest['N'], latest['Low20'], avg_entry + 0.5*latest['N']
-                if latest['Close'] < stop: st.error(f"🛑 **[상황 A]** 방어선(${stop:.2f}) 이탈!")
-                elif latest['Close'] < trail: st.error(f"💰 **[상황 C]** 최종추세이탈(${trail:.2f})!") # 💡 문구 교체 (익절선 -> 최종추세이탈)
+                if latest['Close'] < stop: st.error(f"🛑 **[상황 A]** 초기손실방어선(${stop:.2f}) 이탈!")
+                elif latest['Close'] < trail: st.error(f"💰 **[상황 C]** 최종추세이탈(${trail:.2f})!") 
                 elif latest['Close'] >= add and pos['Units'] < MAX_UNIT_PER_STOCK: st.success(f"🚀 **[상황 B]** 불타기(${add:.2f}) 돌파!")
                 else: st.info(f"✅ 순항 중 (수익률: {profit_pct:.2%})")
             
@@ -309,7 +310,6 @@ with tab2:
                 base = alt.Chart(chart_df).encode(x=alt.X('Date:T', title=None))
                 line = base.mark_line(color='#1f77b4').encode(y=alt.Y('Close:Q', scale=alt.Scale(zero=False)))
                 
-                # 💡 차트 레벨(Level) 문구 전면 교체 및 '평단가' 공통 추가
                 if "낙폭" in strat:
                     levels = [
                         {'val': avg_entry, 'name': '평단가', 'col': 'gray'},
@@ -320,8 +320,8 @@ with tab2:
                 else:
                     levels = [
                         {'val': avg_entry, 'name': '평단가', 'col': 'gray'},
-                        {'val': stop, 'name': '초기손실방어', 'col': 'red'},          # 💡 -2N 변경
-                        {'val': trail, 'name': '최종추세이탈', 'col': 'green'},      # 💡 -3N 변경
+                        {'val': stop, 'name': '초기손실방어', 'col': 'red'},          
+                        {'val': trail, 'name': '최종추세이탈', 'col': 'green'},      
                         {'val': add, 'name': '불타기', 'col': 'orange'}
                     ]
                 

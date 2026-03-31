@@ -193,7 +193,7 @@ def get_stock_news(query_name, market="US"):
 # ==========================================
 # 4. 메인 UI 및 세션 초기화
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.18", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.19", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state: st.session_state.positions = load_data()
 if "my_tickers_us" not in st.session_state: st.session_state["my_tickers_us"] = []
@@ -217,7 +217,7 @@ if uploaded_file is not None and st.sidebar.button("데이터 즉시 복구", ty
     except: st.sidebar.error("❌ 파일 형식 오류")
 
 # --- 메인 타이틀 ---
-st.title("🐢 Turtle System Pro V7.18")
+st.title("🐢 Turtle System Pro V7.19")
 
 is_bull, spy_val, ma200_val, is_trending_up = check_market_filter()
 if is_bull:
@@ -235,7 +235,7 @@ c_d3.metric("보유 종목", f"{len(st.session_state.positions)}개")
 st.divider()
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🚀 1. 터틀 스캐너", "📋 2. 포지션 매니저", "📉 3. 낙폭과대 스캐너", "🇺🇸 4. 미국 종목 분석", "🌍 5. 세계 경제 뉴스"])
 
-# --- 탭 1 & 3: 스캐너 (현금 한도 필터 포함) ---
+# --- 탭 1 & 3: 스캐너 ---
 for tab, strat_name in zip([tab1, tab3], ["🚀 터틀-상승", "📉 낙폭-하강"]):
     with tab:
         st.subheader(f"{strat_name} 종목 검색")
@@ -263,12 +263,11 @@ for tab, strat_name in zip([tab1, tab3], ["🚀 터틀-상승", "📉 낙폭-하
                     st.session_state.positions[s['Ticker']] = {'Units': 1, 'Highest': s['Price'], 'History': [{'price': s['Price'], 'shares': s['Shares']}], 'Strategy': s['Strategy']}
                     save_data(st.session_state.positions); st.rerun()
 
-# --- 탭 2: 통합 매니저 (수기 등록 기능 업그레이드) ---
+# --- 탭 2: 통합 매니저 ---
 with tab2:
     with st.expander("✍️ 보유 종목 수기 등록 (전략 선택)", expanded=False):
         m1, m2, m3, m4 = st.columns(4)
         m_tkr = m1.text_input("티커", key="m_tkr").upper()
-        # 💡 전략 선택지를 터틀과 낙폭 두 가지로만 구성
         m_str = m2.selectbox("적용 전략", ["🚀 터틀-상승", "📉 낙폭-하강"], key="m_str")
         m_prc = m3.number_input("단가", min_value=0.0, format="%.2f", key="m_prc")
         m_shr = m4.number_input("수량", min_value=1, step=1, key=m_tkr+"_s")
@@ -278,6 +277,7 @@ with tab2:
                 save_data(st.session_state.positions); st.success(f"{m_tkr} 등록 완료!"); time.sleep(0.5); st.rerun()
             else: st.error("유효한 티커를 입력하세요.")
     st.divider()
+    
     if not st.session_state.positions: st.info("보유 포지션이 없습니다.")
     for tkr, pos in list(st.session_state.positions.items()):
         data = analyze_ticker(tkr)
@@ -287,10 +287,12 @@ with tab2:
         avg_entry = sum(h['price'] * h['shares'] for h in pos['History']) / total_shares if total_shares > 0 else 0
         profit_pct = (latest['Close'] / avg_entry) - 1 if avg_entry > 0 else 0
         if latest['Close'] > pos['Highest']: pos['Highest'] = latest['Close']; save_data(st.session_state.positions)
+        
         with st.container(border=True):
             c_t, c_d = st.columns([4, 1])
             c_t.markdown(f"#### **{tkr}** :{('blue' if '터틀' in strat else 'red')}[({strat})] - {total_shares}주")
             if c_d.button("종료", key=f"ex_{tkr}"): del st.session_state.positions[tkr]; save_data(st.session_state.positions); st.rerun()
+            
             if "낙폭" in strat:
                 if profit_pct >= 0.05: st.success("💰 **수익실현 권장 (+5% 도달)**")
                 elif profit_pct <= -0.03: st.error("🛑 **손절 권장 (-3% 도달)**")
@@ -298,19 +300,37 @@ with tab2:
             else:
                 stop, trail, donchian, add = avg_entry - 2*latest['N'], pos['Highest'] - 3*latest['N'], latest['Low20'], avg_entry + 0.5*latest['N']
                 if latest['Close'] < stop: st.error(f"🛑 **[상황 A]** 방어선(${stop:.2f}) 이탈!")
-                elif latest['Close'] < trail: st.error(f"💰 **[상황 C]** 익절선(${trail:.2f}) 이탈!")
+                elif latest['Close'] < trail: st.error(f"💰 **[상황 C]** 최종추세이탈(${trail:.2f})!") # 💡 문구 교체 (익절선 -> 최종추세이탈)
                 elif latest['Close'] >= add and pos['Units'] < MAX_UNIT_PER_STOCK: st.success(f"🚀 **[상황 B]** 불타기(${add:.2f}) 돌파!")
                 else: st.info(f"✅ 순항 중 (수익률: {profit_pct:.2%})")
+            
             with st.expander("📊 지표 차트 및 상세 관리"):
                 chart_df = data.reset_index()[['Date', 'Close']].tail(90)
                 base = alt.Chart(chart_df).encode(x=alt.X('Date:T', title=None))
                 line = base.mark_line(color='#1f77b4').encode(y=alt.Y('Close:Q', scale=alt.Scale(zero=False)))
-                levels = [{'val': avg_entry*1.05, 'name': '5% 익절', 'col': 'green'}, {'val': avg_entry*1.1, 'name': '10% 목표', 'col': 'blue'}, {'val': avg_entry*0.97, 'name': '3% 손절', 'col': 'red'}] if "낙폭" in strat else [{'val': stop, 'name': '손절(-2N)', 'col': 'red'}, {'val': trail, 'name': '익절(-3N)', 'col': 'green'}, {'val': add, 'name': '불타기', 'col': 'orange'}]
+                
+                # 💡 차트 레벨(Level) 문구 전면 교체 및 '평단가' 공통 추가
+                if "낙폭" in strat:
+                    levels = [
+                        {'val': avg_entry, 'name': '평단가', 'col': 'gray'},
+                        {'val': avg_entry*1.05, 'name': '5% 익절', 'col': 'green'}, 
+                        {'val': avg_entry*1.1, 'name': '10% 목표', 'col': 'blue'}, 
+                        {'val': avg_entry*0.97, 'name': '3% 손절', 'col': 'red'}
+                    ]
+                else:
+                    levels = [
+                        {'val': avg_entry, 'name': '평단가', 'col': 'gray'},
+                        {'val': stop, 'name': '초기손실방어', 'col': 'red'},          # 💡 -2N 변경
+                        {'val': trail, 'name': '최종추세이탈', 'col': 'green'},      # 💡 -3N 변경
+                        {'val': add, 'name': '불타기', 'col': 'orange'}
+                    ]
+                
                 layers = [line]
                 for i, lv in enumerate(levels):
                     layers.append(alt.Chart(pd.DataFrame({'y': [lv['val']]})).mark_rule(strokeDash=[5,5], color=lv['col']).encode(y='y:Q'))
                     layers.append(alt.Chart(pd.DataFrame({'Date': [chart_df['Date'].max()], 'y': [lv['val']], 't': [f"{lv['name']}: ${lv['val']:.2f}"]})).mark_text(align='left', dx=10, dy=(i*18)-18, color=lv['col'], fontWeight='bold').encode(x='Date:T', y='y:Q', text='t:N'))
                 st.altair_chart(alt.layer(*layers).properties(height=350), use_container_width=True)
+                
                 c1, c2 = st.columns(2)
                 in_p = c1.number_input("단가", min_value=0.0, format="%.2f", key=f"p_{tkr}", value=latest['Close'])
                 in_s = c2.number_input("수량", min_value=1, step=1, key=f"s_{tkr}")
@@ -320,11 +340,12 @@ with tab2:
                 if b2.button("🔙 삭제", key=f"u_{tkr}", use_container_width=True) and len(pos['History']) > 1:
                     pos['History'].pop(); pos['Units'] = len(pos['History']); save_data(st.session_state.positions); st.rerun()
                 st.markdown("**매수 내역**"); st.table(pd.DataFrame(pos['History']).style.format({'price': '{:.2f}'}))
+    
     if st.session_state.positions:
         csv = pd.DataFrame([{'Ticker': k, **v, 'History': json.dumps(v['History'])} for k, v in st.session_state.positions.items()]).to_csv(index=False).encode('utf-8-sig')
         st.download_button(f"💾 전체 통합 백업 ({datetime.now().strftime('%y%m%d')})", csv, f"{datetime.now().strftime('%y%m%d')}_pos.csv", "text/csv", use_container_width=True)
 
-# --- 탭 4 & 5: 뉴스 및 공시 (KST/최신순 보존) ---
+# --- 탭 4 & 5: 뉴스 및 공시 ---
 with tab4:
     st.subheader("🇺🇸 미국 종목 분석")
     t_in = st.text_input("티커 입력", key="us_in").upper()

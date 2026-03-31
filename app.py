@@ -193,7 +193,7 @@ def get_stock_news(query_name, market="US"):
 # ==========================================
 # 4. 메인 UI 및 세션 초기화
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.20", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.21", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state: st.session_state.positions = load_data()
 if "my_tickers_us" not in st.session_state: st.session_state["my_tickers_us"] = []
@@ -208,7 +208,6 @@ risk_per_unit = st.sidebar.slider("1 Unit 당 위험 감수율 (%)", 1.0, 5.0, 2
 exchange_rate = st.sidebar.number_input("현재 환율 (₩/$)", min_value=1000, value=1450, step=10)
 
 st.sidebar.divider()
-# 💡 안드로이드 파일 탐색기 오류 해결을 위해 type=['csv'] 제한 속성 제거
 uploaded_file = st.sidebar.file_uploader("📂 백업 CSV 업로드")
 if uploaded_file is not None and st.sidebar.button("데이터 즉시 복구", type="primary"):
     try:
@@ -218,7 +217,7 @@ if uploaded_file is not None and st.sidebar.button("데이터 즉시 복구", ty
     except: st.sidebar.error("❌ 파일 형식 오류 (CSV 파일이 맞는지 확인해주세요)")
 
 # --- 메인 타이틀 ---
-st.title("🐢 Turtle System Pro V7.20")
+st.title("🐢 Turtle System Pro V7.21")
 
 is_bull, spy_val, ma200_val, is_trending_up = check_market_filter()
 if is_bull:
@@ -300,9 +299,19 @@ with tab2:
                 else: st.info(f"✅ 보유 중 (수익률: {profit_pct:.2%})")
             else:
                 stop, trail, donchian, add = avg_entry - 2*latest['N'], pos['Highest'] - 3*latest['N'], latest['Low20'], avg_entry + 0.5*latest['N']
+                
+                # 💡 추가 매수 권장 수량 실시간 계산 (현금 한도 필터 적용)
+                risk_shares = int((total_capital * risk_per_unit) / (latest['N'] * exchange_rate)) if latest['N'] > 0 else 1
+                cash_shares = int((total_capital / MAX_TOTAL_UNITS) / (latest['Close'] * exchange_rate))
+                add_shares = max(1, min(risk_shares, cash_shares))
+
                 if latest['Close'] < stop: st.error(f"🛑 **[상황 A]** 초기손실방어선(${stop:.2f}) 이탈!")
                 elif latest['Close'] < trail: st.error(f"💰 **[상황 C]** 최종추세이탈(${trail:.2f})!") 
-                elif latest['Close'] >= add and pos['Units'] < MAX_UNIT_PER_STOCK: st.success(f"🚀 **[상황 B]** 불타기(${add:.2f}) 돌파!")
+                elif latest['Close'] >= add and pos['Units'] < MAX_UNIT_PER_STOCK: 
+                    # 💡 불타기 시 추가 매수 수량 안내 적용
+                    st.success(f"🚀 **[상황 B]** 불타기(${add:.2f}) 돌파! 👉 **추가 매수 권장: {add_shares}주** (현재 {pos['Units']}/{MAX_UNIT_PER_STOCK} U)")
+                elif latest['Close'] >= add and pos['Units'] >= MAX_UNIT_PER_STOCK:
+                    st.success(f"🚀 **[상황 B]** 불타기(${add:.2f}) 돌파! (최대 보유 한도 도달로 관망)")
                 else: st.info(f"✅ 순항 중 (수익률: {profit_pct:.2%})")
             
             with st.expander("📊 지표 차트 및 상세 관리"):
@@ -325,10 +334,13 @@ with tab2:
                         {'val': add, 'name': '불타기', 'col': 'orange'}
                     ]
                 
+                # 💡 가격순 정렬하여 라벨이 선명하게 자신의 라인 위에 안착하도록 수정 (dy=-4 고정)
+                levels.sort(key=lambda x: x['val'], reverse=True)
+                
                 layers = [line]
-                for i, lv in enumerate(levels):
+                for lv in levels:
                     layers.append(alt.Chart(pd.DataFrame({'y': [lv['val']]})).mark_rule(strokeDash=[5,5], color=lv['col']).encode(y='y:Q'))
-                    layers.append(alt.Chart(pd.DataFrame({'Date': [chart_df['Date'].max()], 'y': [lv['val']], 't': [f"{lv['name']}: ${lv['val']:.2f}"]})).mark_text(align='left', dx=10, dy=(i*18)-18, color=lv['col'], fontWeight='bold').encode(x='Date:T', y='y:Q', text='t:N'))
+                    layers.append(alt.Chart(pd.DataFrame({'Date': [chart_df['Date'].max()], 'y': [lv['val']], 't': [f"{lv['name']}: ${lv['val']:.2f}"]})).mark_text(align='left', dx=10, dy=-4, color=lv['col'], fontWeight='bold').encode(x='Date:T', y='y:Q', text='t:N'))
                 st.altair_chart(alt.layer(*layers).properties(height=350), use_container_width=True)
                 
                 c1, c2 = st.columns(2)
@@ -370,3 +382,4 @@ with tab5:
         raw = e.get("published_parsed")
         dt_kst = datetime(*raw[:6]) + timedelta(hours=9) if raw else None
         st.markdown(f"📍 [{e.title}]({e.link}) `[{dt_kst.strftime('%Y-%m-%d %H:%M (KST)') if dt_kst else '미상'}]`")
+

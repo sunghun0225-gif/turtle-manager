@@ -193,7 +193,7 @@ def get_stock_news(query_name, market="US"):
 # ==========================================
 # 4. 메인 UI 및 세션 초기화
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.23", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.24", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state: st.session_state.positions = load_data()
 if "my_tickers_us" not in st.session_state: st.session_state["my_tickers_us"] = []
@@ -217,7 +217,7 @@ if uploaded_file is not None and st.sidebar.button("데이터 즉시 복구", ty
     except: st.sidebar.error("❌ 파일 형식 오류 (CSV 파일이 맞는지 확인해주세요)")
 
 # --- 메인 타이틀 ---
-st.title("🐢 Turtle System Pro V7.23")
+st.title("🐢 Turtle System Pro V7.24")
 
 is_bull, spy_val, ma200_val, is_trending_up = check_market_filter()
 if is_bull:
@@ -255,13 +255,19 @@ for tab, strat_name in zip([tab1, tab3], ["🚀 터틀-상승", "📉 낙폭-하
                         results.append({"Ticker": tkr, "Price": latest['Close'], "Shares": shares, "Strategy": strat_name})
             my_bar.empty(); st.session_state[f"res_{strat_name}"] = results
         
-        for s in st.session_state.get(f"res_{strat_name}", []):
-            with st.container(border=True):
-                c1, c2, c3 = st.columns(3)
-                c1.write(f"### {s['Ticker']}"); c2.write(f"현재가: ${s['Price']:.2f}"); c3.write(f"권장: {s['Shares']}주")
-                if s['Ticker'] not in st.session_state.positions and st.button("➕ 등록", key=f"reg_{strat_name}_{s['Ticker']}", use_container_width=True):
-                    st.session_state.positions[s['Ticker']] = {'Units': 1, 'Highest': s['Price'], 'History': [{'price': s['Price'], 'shares': s['Shares']}], 'Strategy': s['Strategy']}
-                    save_data(st.session_state.positions); st.rerun()
+        # 💡 신규 로직: 검색 결과가 없을 때 안내 메시지 출력
+        if f"res_{strat_name}" in st.session_state:
+            scanned_results = st.session_state[f"res_{strat_name}"]
+            if not scanned_results:
+                st.info("ℹ️ 현재 시장 상황에서 조건에 부합하는 종목이 없습니다.")
+            else:
+                for s in scanned_results:
+                    with st.container(border=True):
+                        c1, c2, c3 = st.columns(3)
+                        c1.write(f"### {s['Ticker']}"); c2.write(f"현재가: ${s['Price']:.2f}"); c3.write(f"권장: {s['Shares']}주")
+                        if s['Ticker'] not in st.session_state.positions and st.button("➕ 등록", key=f"reg_{strat_name}_{s['Ticker']}", use_container_width=True):
+                            st.session_state.positions[s['Ticker']] = {'Units': 1, 'Highest': s['Price'], 'History': [{'price': s['Price'], 'shares': s['Shares']}], 'Strategy': s['Strategy']}
+                            save_data(st.session_state.positions); st.rerun()
 
 # --- 탭 2: 통합 매니저 ---
 with tab2:
@@ -317,7 +323,6 @@ with tab2:
                 base = alt.Chart(chart_df).encode(x=alt.X('Date:T', title=None))
                 line = base.mark_line(color='#1f77b4').encode(y=alt.Y('Close:Q', scale=alt.Scale(zero=False)))
                 
-                # 💡 차트에 '현재가(보라색)' 추가
                 if "낙폭" in strat:
                     levels = [
                         {'val': avg_entry, 'name': '평단가', 'col': 'gray'},
@@ -388,4 +393,3 @@ with tab5:
         raw = e.get("published_parsed")
         dt_kst = datetime(*raw[:6]) + timedelta(hours=9) if raw else None
         st.markdown(f"📍 [{e.title}]({e.link}) `[{dt_kst.strftime('%Y-%m-%d %H:%M (KST)') if dt_kst else '미상'}]`")
-

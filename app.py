@@ -10,23 +10,20 @@ import feedparser
 import urllib.parse
 from datetime import datetime, timedelta
 
-import ssl
-ssl._create_default_https_context = ssl._create_unverified_context
-
 # ==========================================
-# 1. 데이터 입출력 및 환경 설정 (FIX 2 적용)
+# 1. 데이터 입출력 및 환경 설정
 # ==========================================
-DB_FILE = 'internal_memory.csv' 
-MAX_TOTAL_UNITS = 10       
-MAX_UNIT_PER_STOCK = 3     
-CACHE_TTL = 300  
+DB_FILE = 'internal_memory.csv'
+MAX_TOTAL_UNITS = 10
+MAX_UNIT_PER_STOCK = 3
+CACHE_TTL = 300
 
-@st.cache_data(ttl=86400) 
+@st.cache_data(ttl=86400)
 def get_sp500_tickers():
     try:
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
         headers = {'User-Agent': 'Mozilla/5.0'}
-        html = requests.get(url, headers=headers).text
+        html = requests.get(url, headers=headers, verify=False).text
         table = pd.read_html(html)[0]
         tickers = table['Symbol'].tolist()
         return [ticker.replace('.', '-') for ticker in tickers]
@@ -47,9 +44,9 @@ def load_data():
                 history = raw_history
             else:
                 history = []
-                
+
             positions[row['Ticker']] = {
-                'Units': int(row['Units']),
+                'Units': len(history),
                 'Highest': float(row['Highest']),
                 'History': history,
                 'Strategy': row['Strategy'] if 'Strategy' in df.columns else '🚀 터틀-상승'
@@ -61,11 +58,17 @@ def save_data(positions):
     if positions:
         rows = []
         for tkr, data in positions.items():
+            history = data.get('History', [])
+            if not isinstance(history, list):
+                try:
+                    history = json.loads(history)
+                except Exception:
+                    history = []
             rows.append({
                 'Ticker': tkr,
-                'Units': data['Units'],
+                'Units': len(history),
                 'Highest': data['Highest'],
-                'History': json.dumps(data.get('History', [])),
+                'History': json.dumps(history),
                 'Strategy': data.get('Strategy', '🚀 터틀-상승')
             })
         pd.DataFrame(rows).to_csv(DB_FILE, index=False)
@@ -73,7 +76,7 @@ def save_data(positions):
         os.remove(DB_FILE)
 
 # ==========================================
-# 2. 분석 엔진 (FIX 1 적용)
+# 2. 분석 엔진
 # ==========================================
 @st.cache_data(ttl=3600)
 def check_market_filter():
@@ -84,31 +87,30 @@ def check_market_filter():
         ma200_now = spy['MA200'].iloc[-1]
         last_6_ma200 = spy['MA200'].tail(6)
         is_trending_up = all(last_6_ma200.iloc[i] > last_6_ma200.iloc[i-1] for i in range(1, 6))
-        
         return (curr_spy > ma200_now) and is_trending_up, curr_spy, ma200_now, is_trending_up
-    except: 
+    except:
         return True, 0, 0, False
 
 @st.cache_data(ttl=3600)
 def analyze_ticker(ticker):
     try:
         df = yf.Ticker(ticker).history(period="1y")
-        if len(df) < 200: 
+        if len(df) < 200:
             return None
-            
-        if isinstance(df.columns, pd.MultiIndex): 
+
+        if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-        
+
         df['prev_close'] = df['Close'].shift(1)
         df['TR'] = df.apply(
             lambda x: max(
-                x['High'] - x['Low'], 
-                abs(x['High'] - x['prev_close']) if pd.notna(x['prev_close']) else 0, 
+                x['High'] - x['Low'],
+                abs(x['High'] - x['prev_close']) if pd.notna(x['prev_close']) else 0,
                 abs(x['Low'] - x['prev_close']) if pd.notna(x['prev_close']) else 0
             ), axis=1
         )
         df.drop(columns=['prev_close'], inplace=True)
-        
+
         df['N'] = df['TR'].rolling(20).mean()
         df['High55'] = df['High'].rolling(55).max().shift(1)
         df['Low20'] = df['Low'].rolling(20).min().shift(1)
@@ -117,25 +119,25 @@ def analyze_ticker(ticker):
         df['MA5'] = df['Close'].rolling(5).mean()
         df['Std'] = df['Close'].rolling(20).std()
         df['BB_Lower'] = df['MA20'] - (df['Std'] * 2)
-        
+        df['BB_Upper'] = df['MA20'] + (df['Std'] * 2)
+
         delta = df['Close'].diff()
         gain = delta.where(delta > 0, 0)
         loss = -delta.where(delta < 0, 0)
         avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
         avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
-        
         df['RSI'] = 100 - (100 / (1 + (avg_gain / (avg_loss + 1e-9))))
-        return df 
-    except: 
+        return df
+    except:
         return None
 
 # ==========================================
-# 3. 보조 분석 툴 (SEC & KST 뉴스)
+# 3. 보조 분석 툴 (SEC & 뉴스)
 # ==========================================
 FILING_LABELS = {
-    "10-K": "📊 연간보고서", 
-    "10-Q": "📋 분기보고서", 
-    "8-K": "🔔 중요공시", 
+    "10-K": "📊 연간보고서",
+    "10-Q": "📋 분기보고서",
+    "8-K": "🔔 중요공시",
     "4": "👤 내부자거래"
 }
 
@@ -143,33 +145,33 @@ FILING_LABELS = {
 def get_cik(ticker: str):
     try:
         headers = {"User-Agent": "TurtlePro/1.0"}
-        res = requests.get("https://www.sec.gov/files/company_tickers.json", headers=headers).json()
+        res = requests.get("https://www.sec.gov/files/company_tickers.json", headers=headers, verify=False).json()
         for v in res.values():
-            if v["ticker"].upper() == ticker.upper(): 
+            if v["ticker"].upper() == ticker.upper():
                 return str(v["cik_str"]).zfill(10)
-    except: 
+    except:
         return None
 
 def get_sec_filings(ticker: str):
     cik = get_cik(ticker)
-    if not cik: 
+    if not cik:
         return []
     try:
         headers = {"User-Agent": "TurtlePro/1.0"}
         url = f"https://data.sec.gov/submissions/CIK{cik}.json"
-        res = requests.get(url, headers=headers).json()
+        res = requests.get(url, headers=headers, verify=False).json()
         recent = res.get("filings", {}).get("recent", {})
         filings = []
         for i in range(min(10, len(recent.get("form", [])))):
             form = recent["form"][i]
             label = FILING_LABELS.get(form, f"📄 {form}")
             filings.append({
-                "form": label, 
-                "date": recent["filingDate"][i], 
+                "form": label,
+                "date": recent["filingDate"][i],
                 "url": f"https://www.sec.gov/cgi-bin/browse-edgar?CIK={cik}&action=getcompany"
             })
         return filings
-    except: 
+    except:
         return []
 
 def get_stock_news(query_name):
@@ -183,25 +185,44 @@ def get_stock_news(query_name):
             if raw:
                 dt_kst = datetime(*raw[:6]) + timedelta(hours=9)
                 date_str = dt_kst.strftime("%Y-%m-%d %H:%M (KST)")
-            else: 
+            else:
                 date_str = "시간 미상"
             news_list.append({
-                "title": entry.title, 
-                "link": entry.link, 
-                "date": date_str, 
-                "raw": raw
+                "title": entry.title,
+                "link": entry.link,
+                "date": date_str,
+                "raw": raw if raw is not None else (0,) * 9
             })
-        news_list.sort(key=lambda x: x['raw'] if x['raw'] else time.localtime(0), reverse=True)
+        news_list.sort(key=lambda x: x['raw'], reverse=True)
         return news_list[:8]
-    except: 
+    except:
+        return []
+
+@st.cache_data(ttl=1800)
+def get_global_news():
+    try:
+        feed = feedparser.parse(
+            "https://news.google.com/rss/search?q=global+economy+market+when:24h&hl=en-US&gl=US&ceid=US:en"
+        )
+        result = []
+        for e in feed.entries[:10]:
+            raw = e.get("published_parsed")
+            if raw:
+                dt = datetime(*raw[:6]) + timedelta(hours=9)
+                date_str = dt.strftime('%Y-%m-%d %H:%M')
+            else:
+                date_str = "업데이트 시간 미상"
+            result.append({"title": e.title, "link": e.link, "date": date_str})
+        return result
+    except:
         return []
 
 # ==========================================
-# 4. 메인 UI 및 사이드바 백업 복원
+# 4. 메인 UI 및 사이드바
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.40", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.43", layout="centered", page_icon="🐢")
 
-if "positions" not in st.session_state: 
+if "positions" not in st.session_state:
     st.session_state.positions = load_data()
 
 st.sidebar.header("⚙️ 리스크 및 시스템 설정")
@@ -221,25 +242,26 @@ if up_file and st.sidebar.button("데이터 즉시 복구", type="primary"):
             raw = row['History']
             history = json.loads(raw) if isinstance(raw, str) else (raw if isinstance(raw, list) else [])
             recovered[row['Ticker']] = {
-                'Units': int(row['Units']), 
-                'Highest': float(row['Highest']), 
-                'History': history, 
+                'Units': len(history),
+                'Highest': float(row['Highest']),
+                'History': history,
                 'Strategy': row['Strategy']
             }
         st.session_state.positions = recovered
         save_data(st.session_state.positions)
         st.sidebar.success("✅ 백업 데이터 복구 완료!")
         st.rerun()
-    except Exception as e: 
+    except Exception as e:
         st.sidebar.error(f"❌ 파일 형식 오류: {e}")
 
-st.title("🐢 Turtle System Pro V7.40")
-is_bull, spy_val, _, _ = check_market_filter()
+st.title("🐢 Turtle System Pro V7.43")
 
-if is_bull: 
-    st.success(f"🟢 **시장 필터 통과 (대세 상승)** | SPY: ${spy_val:.2f}")
-else: 
-    st.error(f"🔴 **시장 필터 경고 (대세 하락)** | SPY: ${spy_val:.2f}")
+is_bull, spy_val, ma200_val, is_trending_up = check_market_filter()
+trend_label = "📈 MA200 우상향" if is_trending_up else "➡️ MA200 횡보/하향"
+if is_bull:
+    st.success(f"🟢 **시장 필터 통과 (대세 상승)** | SPY: ${spy_val:.2f} / MA200: ${ma200_val:.2f} | {trend_label}")
+else:
+    st.error(f"🔴 **시장 필터 경고 (대세 하락)** | SPY: ${spy_val:.2f} / MA200: ${ma200_val:.2f} | {trend_label}")
 
 c1, c2, c3 = st.columns(3)
 t_units = sum(pos['Units'] for pos in st.session_state.positions.values())
@@ -251,7 +273,7 @@ st.divider()
 tabs = st.tabs(["🚀 터틀", "📈 눌림목", "📉 BB낙폭", "📋 포지션 매니저", "🇺🇸 정밀 분석", "🌍 마켓 뉴스"])
 
 # ==========================================
-# 5. 스캐너 탭 (3대 전략 + 포착 대기 모드)
+# 5. 스캐너 탭
 # ==========================================
 strategies = ["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"]
 
@@ -260,66 +282,66 @@ for i, s_name in enumerate(strategies):
         col_btn, col_chk = st.columns([3, 2])
         is_run = col_btn.button(f"🔎 {s_name} 스캐너 실행", key=f"run_{i}", use_container_width=True)
         is_cand = col_chk.checkbox("⚠️ 포착 대기 종목 포함", key=f"cand_{i}")
-        
+
         if is_run:
             res = []
             pb = st.progress(0, text="S&P 500 전 종목 분석 중...")
-            
+
             for idx, tkr in enumerate(TICKERS):
                 pb.progress((idx + 1) / len(TICKERS))
                 df = analyze_ticker(tkr)
-                
+
                 if df is not None:
                     lt = df.iloc[-1]
                     pv = df.iloc[-2]
                     cond = False
                     cand = False
-                    
+
                     if "터틀" in s_name:
                         cond = (lt['Close'] > lt['High55']) and (lt['Close'] > lt['MA200']) and (50 <= lt['RSI'] < 70)
-                        if is_cand and not cond: 
+                        if is_cand and not cond:
                             cand = (lt['Close'] > lt['High55'] * 0.98) and (lt['Close'] > lt['MA200'])
-                            
+
                     elif "눌림목" in s_name:
                         t20 = (df['Low'].iloc[-5:] <= df['MA20'].iloc[-5:]).any()
                         cond = t20 and (lt['Close'] > lt['MA5']) and (pv['Close'] <= pv['MA5']) and (lt['Close'] > lt['MA200'])
-                        if is_cand and not cond: 
+                        if is_cand and not cond:
                             cand = t20 and (lt['Close'] > lt['MA200'])
-                            
-                    else: # BB낙폭
+
+                    else:  # BB낙폭
                         tbb = (df['Low'].iloc[-3:] <= df['BB_Lower'].iloc[-3:]).any()
                         cond = tbb and (lt['Close'] > lt['MA5']) and (pv['Close'] <= pv['MA5']) and (lt['Close'] > lt['MA200'])
-                        if is_cand and not cond: 
+                        if is_cand and not cond:
                             cand = tbb and (lt['Close'] > lt['MA200'])
-                    
+
                     if cond or cand:
                         sh = int((total_capital * risk_per_unit) / (lt['N'] * exchange_rate)) if lt['N'] > 0 else 1
-                        res.append({"tkr": tkr, "p": lt['Close'], "sh": sh, "is_cand": cand})
-                        
+                        res.append({"tkr": tkr, "p": lt['Close'], "sh": sh, "is_cand": cand, "n": lt['N']})
+
             pb.empty()
-            
-            if not res: 
+
+            if not res:
                 st.info("ℹ️ 현재 시장 상황에서 조건에 부합하는 종목이 없습니다.")
-            
+
             for r in res:
                 with st.container(border=True):
                     l_col, r_col = st.columns([3, 1])
                     tag = " [⚠️ 대기]" if r['is_cand'] else " [✅ 포착]"
                     l_col.write(f"### {r['tkr']}{tag}")
-                    l_col.write(f"현재가: ${r['p']:.2f} | 권장 매수량: {r['sh']}주")
-                    
+                    l_col.write(f"현재가: ${r['p']:.2f} | 권장 매수량: {r['sh']}주 | N(ATR): ${r['n']:.2f}")
+
                     if not r['is_cand'] and r_col.button("➕ 등록", key=f"reg_{r['tkr']}_{i}"):
                         st.session_state.positions[r['tkr']] = {
-                            'Units': 1, 
-                            'Highest': r['p'], 
-                            'History': [{'price': r['p'], 'shares': r['sh']}], 
+                            'Units': 1,
+                            'Highest': r['p'],
+                            'History': [{'price': r['p'], 'shares': r['sh']}],
                             'Strategy': s_name
                         }
                         save_data(st.session_state.positions)
                         st.rerun()
 
 # ==========================================
-# 6. 매니저 탭 (FIX 3, 4 적용 및 차트 분리, 불타기 알림 복원)
+# 6. 매니저 탭
 # ==========================================
 with tabs[3]:
     with st.expander("✍️ 보유 종목 수기 등록", expanded=False):
@@ -328,114 +350,126 @@ with tabs[3]:
         m_s = mc2.selectbox("적용 전략", ["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"])
         m_p = mc3.number_input("초기 진입단가", value=0.0)
         m_h = mc4.number_input("매수 수량(주)", value=1)
-        
+
         if st.button("➕ 포지션 직접 등록", use_container_width=True):
             if m_t:
                 st.session_state.positions[m_t] = {
-                    'Units': 1, 
-                    'Highest': m_p, 
-                    'History': [{'price': m_p, 'shares': m_h}], 
+                    'Units': 1,
+                    'Highest': m_p,
+                    'History': [{'price': m_p, 'shares': m_h}],
                     'Strategy': m_s
                 }
                 save_data(st.session_state.positions)
                 st.rerun()
 
     st.divider()
-    
+
     for tkr, pos in list(st.session_state.positions.items()):
-        # [FIX 3] Units 속성 항상 동기화
-        pos['Units'] = len(pos['History']) 
-        
+        pos['Units'] = len(pos['History'])
+
         df = analyze_ticker(tkr)
-        if df is None: 
+        if df is None:
             continue
-            
+
         lt = df.iloc[-1]
         st_n = pos['Strategy']
         total_s = sum(h['shares'] for h in pos['History'])
-        
-        # [FIX 4] ZeroDivisionError 완벽 차단
-        if total_s > 0: 
+
+        if total_s > 0:
             avg_e = sum(h['price'] * h['shares'] for h in pos['History']) / total_s
             profit = (lt['Close'] / avg_e - 1) if avg_e > 0 else 0.0
-        else: 
+        else:
             avg_e = 0.0
             profit = 0.0
 
-        if lt['Close'] > pos['Highest']: 
+        if lt['Close'] > pos['Highest']:
             pos['Highest'] = lt['Close']
             save_data(st.session_state.positions)
-        
+
         with st.container(border=True):
             h1, h2 = st.columns([4, 1])
             s_color = "blue" if "터틀" in st_n else ("green" if "눌림목" in st_n else "red")
             h1.markdown(f"#### {tkr} :{s_color}[({st_n})] - 총 {total_s}주")
-            
-            if h2.button("매매 종료", key=f"ex_{tkr}"): 
+
+            if h2.button("매매 종료", key=f"ex_{tkr}"):
                 del st.session_state.positions[tkr]
                 save_data(st.session_state.positions)
                 st.rerun()
-            
-            # --- 전략별 알림 및 차트 레벨 설정 ---
+
             lvls = [{'val': avg_e, 'name': '평균단가', 'col': 'gray'}]
-            add_shares_info = None 
+            add_shares_info = -1
+            add_point = 0.0
 
             if "눌림목" in st_n:
                 tp = avg_e * 1.06
                 sl = avg_e * 0.96
                 lvls.append({'val': tp, 'name': '6% 익절선', 'col': 'blue'})
                 lvls.append({'val': sl, 'name': '4% 손절선', 'col': 'red'})
-                
-                if profit >= 0.06: 
+
+                if profit >= 0.06:
                     st.success("💰 **[목표 도달]** 6% 수익실현을 권장합니다.")
-                elif profit <= -0.04: 
+                elif profit <= -0.04:
                     st.error("🛑 **[위험 감지]** 4% 손절선을 이탈했습니다.")
                 else:
                     st.info(f"✅ 순항 중 (현재 수익률: {profit:.2%})")
-                    
+
             elif "BB" in st_n or "낙폭" in st_n:
-                tp = avg_e * 1.05
-                sl = avg_e * 0.95
-                lvls.append({'val': tp, 'name': '5% 익절선', 'col': 'blue'})
-                lvls.append({'val': sl, 'name': '5% 손절선', 'col': 'red'})
-                
-                if profit >= 0.05: 
-                    st.success("💰 **[목표 도달]** 5% 수익실현을 권장합니다.")
-                elif profit <= -0.05: 
-                    st.error("🛑 **[위험 감지]** 5% 손절선을 이탈했습니다.")
+                # [적용 완료] BB낙폭 전략: N 기반 및 BB 하단 손절 + MA20/MA20+1σ 분할 익절
+                n_val = lt['N']
+                sl_n = avg_e - 1.5 * n_val          
+                sl_bb = lt['BB_Lower']               
+                effective_sl = max(sl_n, sl_bb)      
+                tp1 = lt['MA20']                     
+                tp2 = lt['MA20'] + lt['Std']         
+
+                lvls.append({'val': effective_sl, 'name': f'손절(1.5N/BB)', 'col': 'red'})
+                lvls.append({'val': sl_bb, 'name': 'BB하단(재이탈경계)', 'col': 'orange'})
+                lvls.append({'val': tp1, 'name': 'MA20(1차익절)', 'col': 'blue'})
+                lvls.append({'val': tp2, 'name': 'MA20+1σ(2차익절)', 'col': 'darkblue'})
+
+                bb_rebreak = lt['Close'] < lt['BB_Lower']
+                n_stop_hit = lt['Close'] < sl_n
+
+                if lt['Close'] >= tp2:
+                    st.success("💰 **[2차 목표 도달]** MA20+1σ 도달, 전량 익절 검토.")
+                elif lt['Close'] >= tp1:
+                    st.success("📈 **[1차 목표 도달]** MA20 복귀 완료. 절반 익절 후 잔량 유지 검토.")
+                elif bb_rebreak:
+                    st.error("🛑 **[반등 실패]** BB 하단을 재이탈했습니다. 즉시 손절 권장.")
+                elif n_stop_hit:
+                    st.error(f"🛑 **[손절선 도달]** 진입가 대비 1.5N(${sl_n:.2f}) 이탈. 손절 권장.")
                 else:
-                    st.info(f"✅ 바닥 반등 중 (현재 수익률: {profit:.2%})")
-                    
-            else: # 🚀 터틀 전용 로직
+                    st.info(f"✅ 바닥 반등 중 (현재 수익률: {profit:.2%} | 손절: ${effective_sl:.2f})")
+
+            else:  # 🚀 터틀 전용 로직
                 stop = avg_e - 2 * lt['N']
                 trail = pos['Highest'] - 3 * lt['N']
                 don = lt['Low20']
-                add = avg_e + 0.5 * lt['N']
-                
+                add_point = avg_e + 0.5 * lt['N']
+
                 lvls.append({'val': stop, 'name': '초기손절(2N)', 'col': 'red'})
                 lvls.append({'val': trail, 'name': '추세이탈(3N)', 'col': 'green'})
                 lvls.append({'val': don, 'name': '20일신저가', 'col': 'brown'})
-                lvls.append({'val': add, 'name': '불타기타점', 'col': 'orange'})
-                
-                if lt['Close'] < stop or lt['Close'] < don or lt['Close'] < trail: 
+                lvls.append({'val': add_point, 'name': '불타기타점', 'col': 'orange'})
+
+                if lt['Close'] < stop or lt['Close'] < don or lt['Close'] < trail:
                     st.error("🛑 **[추세 종료]** 청산 기준선을 이탈했습니다. 매도를 권장합니다.")
-                elif lt['Close'] >= add and pos['Units'] < MAX_UNIT_PER_STOCK: 
+                elif lt['Close'] >= add_point and pos['Units'] < MAX_UNIT_PER_STOCK:
                     st.success("🚀 **[추세 강화]** 불타기 타점을 돌파했습니다!")
                 else:
                     st.info(f"✅ 추세 탑승 중 (현재 수익률: {profit:.2%})")
-                    
-                # 💡 V7.39에서 누락되었던 불타기 수량 계산식 완벽 복구
+
                 risk_s = int((total_capital * risk_per_unit) / (lt['N'] * exchange_rate)) if lt['N'] > 0 else 1
                 cash_s = int((total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate))
                 add_shares_info = max(1, min(risk_s, cash_s))
 
             lvls.append({'val': lt['Close'], 'name': '현재가', 'col': 'purple'})
 
-            # --- 차트 그리기 ---
+            # --- 차트 ---
             c_df = df.reset_index()[['Date', 'Close']].tail(60)
             base = alt.Chart(c_df).encode(x=alt.X('Date:T', title=None))
             line = base.mark_line(color='#1f77b4').encode(y=alt.Y('Close:Q', scale=alt.Scale(zero=False)))
-            
+
             rules = []
             for l in lvls:
                 rules.append(
@@ -448,60 +482,68 @@ with tabs[3]:
                     .mark_text(align='left', dx=5, dy=-4, color=l['col'], fontWeight='bold')
                     .encode(x='Date:T', y='y:Q', text='t:N')
                 )
-                
+
             st.altair_chart(alt.layer(line, *rules).properties(height=320), use_container_width=True)
-            
-            # 💡 V7.39에서 누락되었던 터틀 전용 불타기 가이드 UI 완벽 복구
-            if "터틀" in st_n and add_shares_info and pos['Units'] < MAX_UNIT_PER_STOCK:
-                st.info(f"💡 **불타기 영역 도달 시, 현재 변동성(N) 기준 [{add_shares_info}주] 추가 매수를 권장합니다.**")
-            
+
+            if "터틀" in st_n and add_shares_info >= 0:
+                if pos['Units'] < MAX_UNIT_PER_STOCK:
+                    if lt['Close'] >= add_point:
+                        st.warning(f"🔔 **[추가 매수 알람]** 불타기 타점(${add_point:.2f}) 돌파! **{add_shares_info}주** 추가 진입 검토.")
+                    else:
+                        st.info(f"💡 **불타기 대기:** ${add_point:.2f} 도달 시 **{add_shares_info}주** 추가 매수 권장 (현재 {pos['Units']}/{MAX_UNIT_PER_STOCK}U)")
+                else:
+                    st.write("✅ **유닛 풀(Full) 탑승:** 최대 유닛(3U) 보유 중.")
+
             # --- 유닛 개별 상세 관리 ---
             c_p, c_s = st.columns(2)
             u_p = c_p.number_input("추가 매수 단가", value=float(lt['Close']), key=f"up_{tkr}")
             u_s = c_s.number_input("추가 매수 수량", value=1, key=f"us_{tkr}")
-            
+
             b_a, b_d = st.columns(2)
             if b_a.button("✅ 새 유닛 추가", key=f"ba_{tkr}", use_container_width=True):
                 pos['History'].append({'price': u_p, 'shares': u_s})
                 pos['Units'] = len(pos['History'])
                 save_data(st.session_state.positions)
                 st.rerun()
-                
+
             if b_d.button("🔙 최근 유닛 취소", key=f"bd_{tkr}", use_container_width=True) and len(pos['History']) > 1:
                 pos['History'].pop()
                 pos['Units'] = len(pos['History'])
                 save_data(st.session_state.positions)
                 st.rerun()
-                
+
             st.table(pd.DataFrame(pos['History']).style.format({'price': '${:.2f}'}))
 
-    # --- 전체 데이터 백업 다운로드 ---
     if st.session_state.positions:
         csv_data = pd.DataFrame([
-            {'Ticker': k, **{kk: vv for kk, vv in v.items() if kk != 'History'}, 'History': json.dumps(v['History'])} 
+            {
+                'Ticker': k,
+                **{kk: vv for kk, vv in v.items() if kk != 'History'},
+                'History': json.dumps(v['History']) if isinstance(v['History'], list) else v['History']
+            }
             for k, v in st.session_state.positions.items()
         ]).to_csv(index=False).encode('utf-8-sig')
-        
+
         st.download_button(
-            "💾 포지션 전체 데이터 안전 백업 (CSV)", 
-            csv_data, 
-            f"Turtle_Positions_Backup_{datetime.now().strftime('%y%m%d')}.csv", 
-            "text/csv", 
+            "💾 포지션 전체 데이터 안전 백업 (CSV)",
+            csv_data,
+            f"Turtle_Positions_Backup_{datetime.now().strftime('%y%m%d')}.csv",
+            "text/csv",
             use_container_width=True
         )
 
 # ==========================================
-# 7. 분석 / 뉴스 탭 (UI 디테일 복원)
+# 7. 분석 / 뉴스 탭
 # ==========================================
 with tabs[4]:
     st.subheader("🇺🇸 미국 주식 정밀 분석")
     t_in = st.text_input("분석을 원하는 종목의 티커를 입력하세요").upper()
-    
+
     if t_in and st.button("분석 실행", use_container_width=True):
         d = analyze_ticker(t_in)
         if d is not None:
             st.info(f"**[{t_in}]** 실시간 종가: **${d['Close'].iloc[-1]:.2f}** | RSI(14): **{d['RSI'].iloc[-1]:.1f}**")
-            
+
             with st.expander("📋 SEC 실시간 기업 공시 (KST 기준 변환)", expanded=True):
                 fils = get_sec_filings(t_in)
                 if fils:
@@ -510,30 +552,27 @@ with tabs[4]:
                         c_a.write(f"**{f['form']}**")
                         c_b.caption(f['date'])
                         c_c.markdown(f"[원문 링크]({f['url']})")
-                else: 
+                else:
                     st.write("해당 기업의 최근 공시 데이터를 찾을 수 없습니다.")
-            
+
             with st.expander("📰 관련 구글 뉴스 (최신순)", expanded=True):
                 s_news = get_stock_news(t_in)
                 if s_news:
-                    for n in s_news: 
+                    for n in s_news:
                         st.markdown(f"- [{n['title']}]({n['link']}) `[{n['date']}]`")
-                else: 
+                else:
                     st.write("관련 뉴스를 검색하지 못했습니다.")
 
 with tabs[5]:
     st.subheader("🌍 글로벌 경제 핵심 뉴스 (KST)")
-    
-    if st.button("🔄 최신 뉴스 불러오기", use_container_width=True): 
+
+    if st.button("🔄 최신 뉴스 불러오기", use_container_width=True):
+        get_global_news.clear()
         st.rerun()
-        
-    f_p = feedparser.parse("https://news.google.com/rss/search?q=global+economy+market+when:24h&hl=en-US&gl=US&ceid=US:en")
-    for e in f_p.entries[:10]:
-        raw = e.get("published_parsed")
-        if raw:
-            dt = datetime(*raw[:6]) + timedelta(hours=9)
-            date_str = dt.strftime('%Y-%m-%d %H:%M')
-        else:
-            date_str = "업데이트 시간 미상"
-            
-        st.markdown(f"📍 [{e.title}]({e.link}) `[{date_str}]`")
+
+    global_news = get_global_news()
+    if global_news:
+        for item in global_news:
+            st.markdown(f"📍 [{item['title']}]({item['link']}) `[{item['date']}]`")
+    else:
+        st.info("뉴스를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.")

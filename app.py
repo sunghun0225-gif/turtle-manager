@@ -445,5 +445,163 @@ with tabs[3]:
                 tp1 = lt['MA20']                     
                 tp2 = lt['MA20'] + lt['Std']         
 
-                lvls.append({'val': effective_sl, 'name': f'손절(1.5N
+                lvls.append({'val': effective_sl, 'name': f'손절(1.5N/BB)', 'col': 'red'})
+                lvls.append({'val': sl_bb, 'name': 'BB하단(경계)', 'col': 'orange'})
+                lvls.append({'val': tp1, 'name': 'MA20(1차익절)', 'col': 'blue'})
+                lvls.append({'val': tp2, 'name': 'MA20+1σ(2차익절)', 'col': 'darkblue'})
 
+                if lt['Close'] >= tp2:
+                    st.success("💰 **[2차 목표 도달]** MA20+1σ 도달 → 전량 익절 검토.")
+                elif lt['Close'] >= tp1:
+                    st.success("📈 **[1차 목표 도달]** MA20 복귀. 50% 익절 + Stop to Breakeven 권장.")
+                elif lt['Close'] < effective_sl:
+                    st.error("🛑 **[손절 조건]** 1.5N 또는 BB Lower 이탈. 즉시 손절 권장.")
+                else:
+                    st.info(f"✅ 바닥 반등 중 (현재 수익률: {profit:.2%} | 손절: ${effective_sl:.2f})")
+
+            # --- 터틀 상승 전략 (V7.5 후행스탑/피라미딩 분리 적용) ---
+            else:  
+                n = lt['N']
+                trail_stop = lt[f'Low{config.get("trailing_days", 10)}']
+                stop_2n = avg_e - config.get("initial_stop_n", 2.0) * n
+                
+                # 피라미딩 기준점 불러오기 (없으면 평균단가 사용)
+                last_pyramid = pos.get('last_pyramid_level')
+                if last_pyramid is None:
+                    last_pyramid = pos['History'][-1]['price'] if pos['History'] else avg_e
+                
+                add_point = last_pyramid + config.get("pyramid_n", 0.5) * n
+
+                lvls.append({'val': stop_2n, 'name': '초기손절(2N)', 'col': 'red'})
+                lvls.append({'val': trail_stop, 'name': f'{config.get("trailing_days", 10)}일신저가(Trailing)', 'col': 'green'})
+                lvls.append({'val': add_point, 'name': '불타기타점', 'col': 'orange'})
+
+                if lt['Close'] < trail_stop:
+                    st.error(f"🛑 **[터틀 청산]** {config.get('trailing_days', 10)}일 신저가 이탈 → 전량 매도 권장")
+                elif lt['Close'] < stop_2n:
+                    st.error("🛑 **[위험]** 2N 초기손절선 이탈")
+                elif lt['Close'] >= add_point and pos['Units'] < max_units:
+                    st.success(f"🚀 **[불타기 타점 도달]** ${add_point:.2f} 돌파! 추가 매수 검토")
+                else:
+                    st.info(f"✅ 추세 탑승 중 (현재 수익률: {profit:.2%})")
+
+                risk_pct = config["risk_pct"] / 100
+                risk_s = int((total_capital * risk_pct) / (n * exchange_rate)) if n > 0 else 1
+                cash_s = int((total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate))
+                add_shares_info = max(1, min(risk_s, cash_s))
+
+            lvls.append({'val': lt['Close'], 'name': '현재가', 'col': 'purple'})
+
+            # --- 차트 그리기 (복원) ---
+            c_df = df.reset_index()[['Date', 'Close']].tail(60)
+            base = alt.Chart(c_df).encode(x=alt.X('Date:T', title=None))
+            line = base.mark_line(color='#1f77b4').encode(y=alt.Y('Close:Q', scale=alt.Scale(zero=False)))
+
+            rules = []
+            for l in lvls:
+                rules.append(
+                    alt.Chart(pd.DataFrame({'y': [l['val']]})).mark_rule(strokeDash=[5, 5], color=l['col']).encode(y='y:Q')
+                )
+                rules.append(
+                    alt.Chart(pd.DataFrame({'Date': [c_df['Date'].max()], 'y': [l['val']], 't': [f"{l['name']}: ${l['val']:.2f}"]}))
+                    .mark_text(align='left', dx=5, dy=-4, color=l['col'], fontWeight='bold')
+                    .encode(x='Date:T', y='y:Q', text='t:N')
+                )
+
+            st.altair_chart(alt.layer(line, *rules).properties(height=320), use_container_width=True)
+
+            if "터틀" in st_n and add_shares_info >= 0:
+                if pos['Units'] < max_units:
+                    if lt['Close'] >= add_point:
+                        st.warning(f"🔔 **[추가 매수 알람]** 불타기 타점(${add_point:.2f}) 돌파! **{add_shares_info}주** 추가 진입 검토.")
+                    else:
+                        st.info(f"💡 **불타기 대기:** ${add_point:.2f} 도달 시 **{add_shares_info}주** 추가 매수 권장 (현재 {pos['Units']}/{max_units}U)")
+                else:
+                    st.write(f"✅ **유닛 풀(Full) 탑승:** 해당 전략의 최대 유닛({max_units}U) 보유 중.")
+
+            # --- 유닛 개별 상세 관리 ---
+            c_p, c_s = st.columns(2)
+            u_p = c_p.number_input("추가 매수 단가", value=float(lt['Close']), key=f"up_{tkr}")
+            u_s = c_s.number_input("추가 매수 수량", value=1, key=f"us_{tkr}")
+
+            b_a, b_d = st.columns(2)
+            if b_a.button("✅ 새 유닛 추가", key=f"ba_{tkr}", use_container_width=True):
+                pos['History'].append({'price': u_p, 'shares': u_s})
+                pos['Units'] = len(pos['History'])
+                if "터틀" in st_n:
+                    pos['last_pyramid_level'] = u_p # [NEW] 불타기 진행 시 기준점 갱신
+                save_data(st.session_state.positions)
+                st.rerun()
+
+            if b_d.button("🔙 최근 유닛 취소", key=f"bd_{tkr}", use_container_width=True) and len(pos['History']) > 1:
+                pos['History'].pop()
+                pos['Units'] = len(pos['History'])
+                if "터틀" in st_n:
+                    pos['last_pyramid_level'] = pos['History'][-1]['price'] # [NEW] 취소 시 기준점 롤백
+                save_data(st.session_state.positions)
+                st.rerun()
+
+            st.table(pd.DataFrame(pos['History']).style.format({'price': '${:.2f}'}))
+
+    if st.session_state.positions:
+        csv_data = pd.DataFrame([
+            {
+                'Ticker': k,
+                **{kk: vv for kk, vv in v.items() if kk != 'History'},
+                'History': json.dumps(v['History']) if isinstance(v['History'], list) else v['History']
+            }
+            for k, v in st.session_state.positions.items()
+        ]).to_csv(index=False).encode('utf-8-sig')
+
+        st.download_button(
+            "💾 포지션 전체 데이터 안전 백업 (CSV)",
+            csv_data,
+            f"Turtle_Positions_Backup_{datetime.now().strftime('%y%m%d')}.csv",
+            "text/csv",
+            use_container_width=True
+        )
+
+# ==========================================
+# 7. 분석 / 뉴스 탭 (V7.43 완전 복원)
+# ==========================================
+with tabs[4]:
+    st.subheader("🇺🇸 미국 주식 정밀 분석")
+    t_in = st.text_input("분석을 원하는 종목의 티커를 입력하세요").upper()
+
+    if t_in and st.button("분석 실행", use_container_width=True):
+        d = analyze_ticker(t_in)
+        if d is not None:
+            st.info(f"**[{t_in}]** 실시간 종가: **${d['Close'].iloc[-1]:.2f}** | RSI(14): **{d['RSI'].iloc[-1]:.1f}**")
+
+            with st.expander("📋 SEC 실시간 기업 공시 (KST 기준 변환)", expanded=True):
+                fils = get_sec_filings(t_in)
+                if fils:
+                    for f in fils:
+                        c_a, c_b, c_c = st.columns([3, 2, 2])
+                        c_a.write(f"**{f['form']}**")
+                        c_b.caption(f['date'])
+                        c_c.markdown(f"[원문 링크]({f['url']})")
+                else:
+                    st.write("해당 기업의 최근 공시 데이터를 찾을 수 없습니다.")
+
+            with st.expander("📰 관련 구글 뉴스 (최신순)", expanded=True):
+                s_news = get_stock_news(t_in)
+                if s_news:
+                    for n in s_news:
+                        st.markdown(f"- [{n['title']}]({n['link']}) `[{n['date']}]`")
+                else:
+                    st.write("관련 뉴스를 검색하지 못했습니다.")
+
+with tabs[5]:
+    st.subheader("🌍 글로벌 경제 핵심 뉴스 (KST)")
+
+    if st.button("🔄 최신 뉴스 불러오기", use_container_width=True):
+        get_global_news.clear()
+        st.rerun()
+
+    global_news = get_global_news()
+    if global_news:
+        for item in global_news:
+            st.markdown(f"📍 [{item['title']}]({item['link']}) `[{item['date']}]`")
+    else:
+        st.info("뉴스를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.")

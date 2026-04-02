@@ -83,8 +83,10 @@ def check_market_filter():
 @st.cache_data(ttl=3600)
 def analyze_ticker(ticker):
     try:
-        df = yf.Ticker(ticker).history(period="6mo")
-        if len(df) < 60: return None
+        # 💡 200일선 계산을 위해 데이터를 1년치(1y)로 확장
+        df = yf.Ticker(ticker).history(period="1y")
+        if len(df) < 200: return None
+        
         df['TR'] = df[['High', 'Low', 'Close']].apply(lambda x: max(x['High']-x['Low'], abs(x['High']-df['Close'].shift(1).loc[x.name]), abs(x['Low']-df['Close'].shift(1).loc[x.name])) if pd.notna(df['Close'].shift(1).loc[x.name]) else x['High']-x['Low'], axis=1)
         df['N'] = df['TR'].rolling(20).mean()
         df['High55'] = df['High'].rolling(55).max().shift(1)
@@ -93,6 +95,7 @@ def analyze_ticker(ticker):
         df['Std'] = df['Close'].rolling(20).std()
         df['BB_Lower'] = df['MA20'] - (df['Std'] * 2)
         df['MA5'] = df['Close'].rolling(5).mean()
+        df['MA200'] = df['Close'].rolling(200).mean() # 💡 200일선 추가
         return df 
     except: return None
 
@@ -193,7 +196,7 @@ def get_stock_news(query_name, market="US"):
 # ==========================================
 # 4. 메인 UI 및 세션 초기화
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.24", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.25", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state: st.session_state.positions = load_data()
 if "my_tickers_us" not in st.session_state: st.session_state["my_tickers_us"] = []
@@ -217,7 +220,7 @@ if uploaded_file is not None and st.sidebar.button("데이터 즉시 복구", ty
     except: st.sidebar.error("❌ 파일 형식 오류 (CSV 파일이 맞는지 확인해주세요)")
 
 # --- 메인 타이틀 ---
-st.title("🐢 Turtle System Pro V7.24")
+st.title("🐢 Turtle System Pro V7.25")
 
 is_bull, spy_val, ma200_val, is_trending_up = check_market_filter()
 if is_bull:
@@ -247,7 +250,13 @@ for tab, strat_name in zip([tab1, tab3], ["🚀 터틀-상승", "📉 낙폭-하
                 data = analyze_ticker(tkr)
                 if data is not None:
                     latest, prev = data.iloc[-1], data.iloc[-2]
-                    cond = (latest['Close'] > latest['High55']) if "터틀" in strat_name else ((data['Low'].iloc[-3:] <= data['BB_Lower'].iloc[-3:]).any() and latest['Close'] > latest['MA5'] and prev['Close'] <= prev['MA5'])
+                    
+                    if "터틀" in strat_name:
+                        cond = (latest['Close'] > latest['High55'])
+                    else:
+                        # 💡 낙폭과대 조건: 200일선(MA200) 위에 있을 때만 검색되도록 추가
+                        cond = ((data['Low'].iloc[-3:] <= data['BB_Lower'].iloc[-3:]).any() and latest['Close'] > latest['MA5'] and prev['Close'] <= prev['MA5'] and latest['Close'] > latest['MA200'])
+                        
                     if cond:
                         risk_shares = int((total_capital * risk_per_unit) / (latest['N'] * exchange_rate)) if latest['N'] > 0 else 1
                         cash_shares = int((total_capital / MAX_TOTAL_UNITS) / (latest['Close'] * exchange_rate))
@@ -255,7 +264,6 @@ for tab, strat_name in zip([tab1, tab3], ["🚀 터틀-상승", "📉 낙폭-하
                         results.append({"Ticker": tkr, "Price": latest['Close'], "Shares": shares, "Strategy": strat_name})
             my_bar.empty(); st.session_state[f"res_{strat_name}"] = results
         
-        # 💡 신규 로직: 검색 결과가 없을 때 안내 메시지 출력
         if f"res_{strat_name}" in st.session_state:
             scanned_results = st.session_state[f"res_{strat_name}"]
             if not scanned_results:
@@ -305,7 +313,8 @@ with tab2:
             
             if "낙폭" in strat:
                 if profit_pct >= 0.05: st.success("💰 **수익실현 권장 (+5% 도달)**")
-                elif profit_pct <= -0.03: st.error("🛑 **손절 권장 (-3% 도달)**")
+                # 💡 낙폭과대 손절 기준을 -3%에서 -5%로 완화
+                elif profit_pct <= -0.05: st.error("🛑 **손절 권장 (-5% 도달)**")
                 else: st.info(f"✅ 보유 중 (수익률: {profit_pct:.2%})")
             else:
                 stop, trail, donchian, add = avg_entry - 2*latest['N'], pos['Highest'] - 3*latest['N'], latest['Low20'], avg_entry + 0.5*latest['N']
@@ -328,7 +337,7 @@ with tab2:
                         {'val': avg_entry, 'name': '평단가', 'col': 'gray'},
                         {'val': avg_entry*1.05, 'name': '5% 익절', 'col': 'green'}, 
                         {'val': avg_entry*1.1, 'name': '10% 목표', 'col': 'blue'}, 
-                        {'val': avg_entry*0.97, 'name': '3% 손절', 'col': 'red'},
+                        {'val': avg_entry*0.95, 'name': '5% 손절', 'col': 'red'}, # 💡 차트 라벨 5%로 수정
                         {'val': latest['Close'], 'name': '현재가', 'col': 'purple'}
                     ]
                 else:

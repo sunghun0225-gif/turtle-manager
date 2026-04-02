@@ -65,7 +65,7 @@ def save_data(positions):
         os.remove(DB_FILE)
 
 # ==========================================
-# 2. 분석 엔진 (터틀 & 시장 필터)
+# 2. 분석 엔진 (터틀 & 시장 필터 & RSI)
 # ==========================================
 @st.cache_data(ttl=3600)
 def check_market_filter():
@@ -83,7 +83,6 @@ def check_market_filter():
 @st.cache_data(ttl=3600)
 def analyze_ticker(ticker):
     try:
-        # 💡 200일선 계산을 위해 데이터를 1년치(1y)로 확장
         df = yf.Ticker(ticker).history(period="1y")
         if len(df) < 200: return None
         
@@ -91,11 +90,21 @@ def analyze_ticker(ticker):
         df['N'] = df['TR'].rolling(20).mean()
         df['High55'] = df['High'].rolling(55).max().shift(1)
         df['Low20'] = df['Low'].rolling(20).min().shift(1)
+        
         df['MA20'] = df['Close'].rolling(20).mean()
         df['Std'] = df['Close'].rolling(20).std()
         df['BB_Lower'] = df['MA20'] - (df['Std'] * 2)
         df['MA5'] = df['Close'].rolling(5).mean()
-        df['MA200'] = df['Close'].rolling(200).mean() # 💡 200일선 추가
+        df['MA200'] = df['Close'].rolling(200).mean()
+        
+        delta = df['Close'].diff()
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
+        avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+        rs = avg_gain / avg_loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
         return df 
     except: return None
 
@@ -196,7 +205,7 @@ def get_stock_news(query_name, market="US"):
 # ==========================================
 # 4. 메인 UI 및 세션 초기화
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.25", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.27", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state: st.session_state.positions = load_data()
 if "my_tickers_us" not in st.session_state: st.session_state["my_tickers_us"] = []
@@ -220,7 +229,7 @@ if uploaded_file is not None and st.sidebar.button("데이터 즉시 복구", ty
     except: st.sidebar.error("❌ 파일 형식 오류 (CSV 파일이 맞는지 확인해주세요)")
 
 # --- 메인 타이틀 ---
-st.title("🐢 Turtle System Pro V7.25")
+st.title("🐢 Turtle System Pro V7.27")
 
 is_bull, spy_val, ma200_val, is_trending_up = check_market_filter()
 if is_bull:
@@ -252,9 +261,9 @@ for tab, strat_name in zip([tab1, tab3], ["🚀 터틀-상승", "📉 낙폭-하
                     latest, prev = data.iloc[-1], data.iloc[-2]
                     
                     if "터틀" in strat_name:
-                        cond = (latest['Close'] > latest['High55'])
+                        cond = (latest['Close'] > latest['High55']) and (latest['Close'] > latest['MA200']) and (50 <= latest['RSI'] < 70)
                     else:
-                        # 💡 낙폭과대 조건: 200일선(MA200) 위에 있을 때만 검색되도록 추가
+                        # 💡 낙폭과대 로직 수정: RSI 조건 제거, 200일선 유지
                         cond = ((data['Low'].iloc[-3:] <= data['BB_Lower'].iloc[-3:]).any() and latest['Close'] > latest['MA5'] and prev['Close'] <= prev['MA5'] and latest['Close'] > latest['MA200'])
                         
                     if cond:
@@ -313,7 +322,6 @@ with tab2:
             
             if "낙폭" in strat:
                 if profit_pct >= 0.05: st.success("💰 **수익실현 권장 (+5% 도달)**")
-                # 💡 낙폭과대 손절 기준을 -3%에서 -5%로 완화
                 elif profit_pct <= -0.05: st.error("🛑 **손절 권장 (-5% 도달)**")
                 else: st.info(f"✅ 보유 중 (수익률: {profit_pct:.2%})")
             else:
@@ -321,6 +329,7 @@ with tab2:
                 
                 if latest['Close'] < stop: st.error(f"🛑 **[상황 A]** 초기손실방어선(${stop:.2f}) 이탈!")
                 elif latest['Close'] < trail: st.error(f"💰 **[상황 C]** 최종추세이탈(${trail:.2f})!") 
+                elif latest['Close'] < donchian: st.error(f"🛑 **[상황 D]** 20일 신저가(${donchian:.2f}) 이탈 (추세 꺾임)!")
                 elif latest['Close'] >= add and pos['Units'] < MAX_UNIT_PER_STOCK: 
                     st.success(f"🚀 **[상황 B]** 불타기(${add:.2f}) 돌파! 👉 **추가 매수 권장: {add_shares}주**")
                 elif latest['Close'] >= add and pos['Units'] >= MAX_UNIT_PER_STOCK:
@@ -337,7 +346,7 @@ with tab2:
                         {'val': avg_entry, 'name': '평단가', 'col': 'gray'},
                         {'val': avg_entry*1.05, 'name': '5% 익절', 'col': 'green'}, 
                         {'val': avg_entry*1.1, 'name': '10% 목표', 'col': 'blue'}, 
-                        {'val': avg_entry*0.95, 'name': '5% 손절', 'col': 'red'}, # 💡 차트 라벨 5%로 수정
+                        {'val': avg_entry*0.95, 'name': '5% 손절', 'col': 'red'},
                         {'val': latest['Close'], 'name': '현재가', 'col': 'purple'}
                     ]
                 else:
@@ -346,6 +355,7 @@ with tab2:
                         {'val': stop, 'name': '초기손실방어', 'col': 'red'},          
                         {'val': trail, 'name': '최종추세이탈', 'col': 'green'},      
                         {'val': add, 'name': '불타기', 'col': 'orange'},
+                        {'val': donchian, 'name': '20일 신저가', 'col': 'brown'}, 
                         {'val': latest['Close'], 'name': '현재가', 'col': 'purple'}
                     ]
                 

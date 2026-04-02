@@ -24,7 +24,7 @@ CACHE_TTL = 300
 def get_sp500_tickers():
     try:
         url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         html = requests.get(url, headers=headers).text
         table = pd.read_html(html)[0]
         tickers = table['Symbol'].tolist()
@@ -205,7 +205,7 @@ def get_stock_news(query_name, market="US"):
 # ==========================================
 # 4. 메인 UI 및 세션 초기화
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.27", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.29", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state: st.session_state.positions = load_data()
 if "my_tickers_us" not in st.session_state: st.session_state["my_tickers_us"] = []
@@ -229,7 +229,7 @@ if uploaded_file is not None and st.sidebar.button("데이터 즉시 복구", ty
     except: st.sidebar.error("❌ 파일 형식 오류 (CSV 파일이 맞는지 확인해주세요)")
 
 # --- 메인 타이틀 ---
-st.title("🐢 Turtle System Pro V7.27")
+st.title("🐢 Turtle System Pro V7.29")
 
 is_bull, spy_val, ma200_val, is_trending_up = check_market_filter()
 if is_bull:
@@ -245,13 +245,23 @@ c_d2.metric("계좌 위험도", f"{current_total_units * (risk_per_unit * 100):.
 c_d3.metric("보유 종목", f"{len(st.session_state.positions)}개")
 
 st.divider()
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🚀 1. 터틀 스캐너", "📋 2. 포지션 매니저", "📉 3. 낙폭과대 스캐너", "🇺🇸 4. 미국 종목 분석", "🌍 5. 세계 경제 뉴스"])
 
-# --- 탭 1 & 3: 스캐너 ---
-for tab, strat_name in zip([tab1, tab3], ["🚀 터틀-상승", "📉 낙폭-하강"]):
+# 💡 6개의 독립 탭으로 확장 구성
+tab_turtle, tab_pullback, tab_bb, tab_manager, tab_us, tab_news = st.tabs([
+    "🚀 1. 터틀", "📈 2. 눌림목", "📉 3. BB낙폭", "📋 4. 매니저", "🇺🇸 5. 분석", "🌍 6. 뉴스"
+])
+
+# --- 탭 1, 2, 3: 3대장 스캐너 렌더링 ---
+scanners = [
+    (tab_turtle, "🚀 터틀-상승"), 
+    (tab_pullback, "📈 20일-눌림목"), 
+    (tab_bb, "📉 BB-낙폭과대")
+]
+
+for tab, strat_name in scanners:
     with tab:
         st.subheader(f"{strat_name} 종목 검색")
-        if st.button(f"🚀 {strat_name} 분석 시작", key=f"btn_{strat_name}", use_container_width=True):
+        if st.button(f"🔎 {strat_name} 분석 시작", key=f"btn_{strat_name}", use_container_width=True):
             my_bar = st.progress(0, text="분석 중...")
             results = []
             for i, tkr in enumerate(TICKERS):
@@ -262,9 +272,12 @@ for tab, strat_name in zip([tab1, tab3], ["🚀 터틀-상승", "📉 낙폭-하
                     
                     if "터틀" in strat_name:
                         cond = (latest['Close'] > latest['High55']) and (latest['Close'] > latest['MA200']) and (50 <= latest['RSI'] < 70)
-                    else:
-                        # 💡 낙폭과대 로직 수정: RSI 조건 제거, 200일선 유지
-                        cond = ((data['Low'].iloc[-3:] <= data['BB_Lower'].iloc[-3:]).any() and latest['Close'] > latest['MA5'] and prev['Close'] <= prev['MA5'] and latest['Close'] > latest['MA200'])
+                    elif "눌림목" in strat_name:
+                        touch_ma20_3d = (data['Low'].iloc[-3:] <= data['MA20'].iloc[-3:]).any()
+                        cond = touch_ma20_3d and (latest['Close'] > latest['MA5']) and (prev['Close'] <= prev['MA5']) and (latest['Close'] > latest['MA200'])
+                    else: # BB-낙폭과대
+                        touch_bb_3d = (data['Low'].iloc[-3:] <= data['BB_Lower'].iloc[-3:]).any()
+                        cond = touch_bb_3d and (latest['Close'] > latest['MA5']) and (prev['Close'] <= prev['MA5']) and (latest['Close'] > latest['MA200'])
                         
                     if cond:
                         risk_shares = int((total_capital * risk_per_unit) / (latest['N'] * exchange_rate)) if latest['N'] > 0 else 1
@@ -286,12 +299,13 @@ for tab, strat_name in zip([tab1, tab3], ["🚀 터틀-상승", "📉 낙폭-하
                             st.session_state.positions[s['Ticker']] = {'Units': 1, 'Highest': s['Price'], 'History': [{'price': s['Price'], 'shares': s['Shares']}], 'Strategy': s['Strategy']}
                             save_data(st.session_state.positions); st.rerun()
 
-# --- 탭 2: 통합 매니저 ---
-with tab2:
+# --- 탭 4: 통합 포지션 매니저 ---
+with tab_manager:
     with st.expander("✍️ 보유 종목 수기 등록 (전략 선택)", expanded=False):
         m1, m2, m3, m4 = st.columns(4)
         m_tkr = m1.text_input("티커", key="m_tkr").upper()
-        m_str = m2.selectbox("적용 전략", ["🚀 터틀-상승", "📉 낙폭-하강"], key="m_str")
+        # 💡 직접 등록 시에도 3가지 전략 중 선택 가능하게 업데이트
+        m_str = m2.selectbox("적용 전략", ["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"], key="m_str")
         m_prc = m3.number_input("단가", min_value=0.0, format="%.2f", key="m_prc")
         m_shr = m4.number_input("수량", min_value=1, step=1, key=m_tkr+"_s")
         if st.button("➕ 직접 등록 실행", type="primary", use_container_width=True):
@@ -317,16 +331,28 @@ with tab2:
 
         with st.container(border=True):
             c_t, c_d = st.columns([4, 1])
-            c_t.markdown(f"#### **{tkr}** :{('blue' if '터틀' in strat else 'red')}[({strat})] - {total_shares}주")
+            # 전략에 따라 뱃지 색상 다르게 표시
+            strat_color = "blue" if "터틀" in strat else ("green" if "눌림목" in strat else "red")
+            c_t.markdown(f"#### **{tkr}** :{strat_color}[({strat})] - {total_shares}주")
             if c_d.button("종료", key=f"ex_{tkr}"): del st.session_state.positions[tkr]; save_data(st.session_state.positions); st.rerun()
             
-            if "낙폭" in strat:
+            # 💡 전략별 익절/손절 알림 다르게 적용
+            if "눌림목" in strat:
+                take_profit_val, stop_loss_val = avg_entry * 1.06, avg_entry * 0.96
+                tp_name, sl_name = '6% 익절', '4% 손절'
+                if profit_pct >= 0.06: st.success("💰 **수익실현 권장 (+6% 도달)**")
+                elif profit_pct <= -0.04: st.error("🛑 **손절 권장 (-4% 도달)**")
+                else: st.info(f"✅ 보유 중 (수익률: {profit_pct:.2%})")
+                
+            elif "BB" in strat or "낙폭" in strat:
+                take_profit_val, stop_loss_val = avg_entry * 1.05, avg_entry * 0.95
+                tp_name, sl_name = '5% 익절', '5% 손절'
                 if profit_pct >= 0.05: st.success("💰 **수익실현 권장 (+5% 도달)**")
                 elif profit_pct <= -0.05: st.error("🛑 **손절 권장 (-5% 도달)**")
                 else: st.info(f"✅ 보유 중 (수익률: {profit_pct:.2%})")
+                
             else:
                 stop, trail, donchian, add = avg_entry - 2*latest['N'], pos['Highest'] - 3*latest['N'], latest['Low20'], avg_entry + 0.5*latest['N']
-                
                 if latest['Close'] < stop: st.error(f"🛑 **[상황 A]** 초기손실방어선(${stop:.2f}) 이탈!")
                 elif latest['Close'] < trail: st.error(f"💰 **[상황 C]** 최종추세이탈(${trail:.2f})!") 
                 elif latest['Close'] < donchian: st.error(f"🛑 **[상황 D]** 20일 신저가(${donchian:.2f}) 이탈 (추세 꺾임)!")
@@ -341,12 +367,12 @@ with tab2:
                 base = alt.Chart(chart_df).encode(x=alt.X('Date:T', title=None))
                 line = base.mark_line(color='#1f77b4').encode(y=alt.Y('Close:Q', scale=alt.Scale(zero=False)))
                 
-                if "낙폭" in strat:
+                # 💡 차트 라벨도 전략별 동적 할당
+                if "눌림목" in strat or "BB" in strat or "낙폭" in strat:
                     levels = [
                         {'val': avg_entry, 'name': '평단가', 'col': 'gray'},
-                        {'val': avg_entry*1.05, 'name': '5% 익절', 'col': 'green'}, 
-                        {'val': avg_entry*1.1, 'name': '10% 목표', 'col': 'blue'}, 
-                        {'val': avg_entry*0.95, 'name': '5% 손절', 'col': 'red'},
+                        {'val': take_profit_val, 'name': tp_name, 'col': 'blue'},
+                        {'val': stop_loss_val, 'name': sl_name, 'col': 'red'},
                         {'val': latest['Close'], 'name': '현재가', 'col': 'purple'}
                     ]
                 else:
@@ -387,8 +413,8 @@ with tab2:
         csv = pd.DataFrame([{'Ticker': k, **v, 'History': json.dumps(v['History'])} for k, v in st.session_state.positions.items()]).to_csv(index=False).encode('utf-8-sig')
         st.download_button(f"💾 전체 통합 백업 ({datetime.now().strftime('%y%m%d')})", csv, f"{datetime.now().strftime('%y%m%d')}_pos.csv", "text/csv", use_container_width=True)
 
-# --- 탭 4 & 5: 뉴스 및 공시 ---
-with tab4:
+# --- 탭 5 & 6: 뉴스 및 공시 ---
+with tab_us:
     st.subheader("🇺🇸 미국 종목 분석")
     t_in = st.text_input("티커 입력", key="us_in").upper()
     if st.button("분석 시작", key="start_us") and t_in:
@@ -403,7 +429,7 @@ with tab4:
                         ca.write(f"**{f['label']}**"); cb.caption(f["date"]); cc.markdown(f"[원문]({f['url']})")
             with st.expander("📰 뉴스 & 홈페이지"):
                 for n in get_stock_news(t_in): st.markdown(f"- [{n['title']}]({n['link']}) `[{n['date']}]`")
-with tab5:
+with tab_news:
     st.subheader("🌍 세계 경제 뉴스 (KST)")
     if st.button("🔄 새로고침"): st.rerun()
     feed = feedparser.parse("https://news.google.com/rss/search?q=global+economy+market+when:24h&hl=en-US&gl=US&ceid=US:en")

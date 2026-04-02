@@ -199,7 +199,7 @@ def get_stock_news(query_name):
 # ==========================================
 # 4. 메인 UI 및 사이드바 백업 복원
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.39", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.40", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state: 
     st.session_state.positions = load_data()
@@ -233,7 +233,7 @@ if up_file and st.sidebar.button("데이터 즉시 복구", type="primary"):
     except Exception as e: 
         st.sidebar.error(f"❌ 파일 형식 오류: {e}")
 
-st.title("🐢 Turtle System Pro V7.39")
+st.title("🐢 Turtle System Pro V7.40")
 is_bull, spy_val, _, _ = check_market_filter()
 
 if is_bull: 
@@ -319,7 +319,7 @@ for i, s_name in enumerate(strategies):
                         st.rerun()
 
 # ==========================================
-# 6. 매니저 탭 (FIX 3, 4 적용 및 차트 분리 완벽화)
+# 6. 매니저 탭 (FIX 3, 4 적용 및 차트 분리, 불타기 알림 복원)
 # ==========================================
 with tabs[3]:
     with st.expander("✍️ 보유 종목 수기 등록", expanded=False):
@@ -424,6 +424,7 @@ with tabs[3]:
                 else:
                     st.info(f"✅ 추세 탑승 중 (현재 수익률: {profit:.2%})")
                     
+                # 💡 V7.39에서 누락되었던 불타기 수량 계산식 완벽 복구
                 risk_s = int((total_capital * risk_per_unit) / (lt['N'] * exchange_rate)) if lt['N'] > 0 else 1
                 cash_s = int((total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate))
                 add_shares_info = max(1, min(risk_s, cash_s))
@@ -437,13 +438,11 @@ with tabs[3]:
             
             rules = []
             for l in lvls:
-                # 점선
                 rules.append(
                     alt.Chart(pd.DataFrame({'y': [l['val']]}))
                     .mark_rule(strokeDash=[5, 5], color=l['col'])
                     .encode(y='y:Q')
                 )
-                # 텍스트 라벨
                 rules.append(
                     alt.Chart(pd.DataFrame({'Date': [c_df['Date'].max()], 'y': [l['val']], 't': [f"{l['name']}: ${l['val']:.2f}"]}))
                     .mark_text(align='left', dx=5, dy=-4, color=l['col'], fontWeight='bold')
@@ -452,9 +451,9 @@ with tabs[3]:
                 
             st.altair_chart(alt.layer(line, *rules).properties(height=320), use_container_width=True)
             
-            # --- 💡 터틀 전용 불타기 가이드 문구 ---
-            if add_shares_info and pos['Units'] < MAX_UNIT_PER_STOCK:
-                st.info(f"💡 **불타기 영역 도달 시, 현재 변동성 기준 [{add_shares_info}주] 추가 매수를 권장합니다.**")
+            # 💡 V7.39에서 누락되었던 터틀 전용 불타기 가이드 UI 완벽 복구
+            if "터틀" in st_n and add_shares_info and pos['Units'] < MAX_UNIT_PER_STOCK:
+                st.info(f"💡 **불타기 영역 도달 시, 현재 변동성(N) 기준 [{add_shares_info}주] 추가 매수를 권장합니다.**")
             
             # --- 유닛 개별 상세 관리 ---
             c_p, c_s = st.columns(2)

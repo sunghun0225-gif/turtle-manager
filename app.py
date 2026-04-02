@@ -69,7 +69,7 @@ def get_sp500_tickers():
 TICKERS = get_sp500_tickers()
 
 # ==========================================
-# 2. 데이터 입출력 (NaN 방어 로직 완벽 적용)
+# 2. 데이터 입출력
 # ==========================================
 def load_data():
     if os.path.exists(DB_FILE):
@@ -84,7 +84,6 @@ def load_data():
             else:
                 history = []
 
-            # NaN 값을 None으로 명시적 변환
             lp_level = row.get('last_pyramid_level')
             if pd.isna(lp_level): 
                 lp_level = None
@@ -271,7 +270,7 @@ def get_global_news():
 # ==========================================
 # 4. 메인 UI 및 사이드바
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.52", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.53", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state:
     st.session_state.positions = load_data()
@@ -312,7 +311,7 @@ if up_file and st.sidebar.button("데이터 즉시 복구", type="primary"):
     except Exception as e: 
         st.sidebar.error(f"❌ 파일 형식 오류: {e}")
 
-st.title("🐢 Turtle System Pro V7.52")
+st.title("🐢 Turtle System Pro V7.53")
 
 is_bull, spy_val, ma200_val, is_trending_up = check_market_filter()
 trend_label = "📈 MA200 우상향" if is_trending_up else "➡️ MA200 횡보/하향"
@@ -406,7 +405,7 @@ for i, s_name in enumerate(strategies):
                         st.rerun()
 
 # ==========================================
-# 6. 매니저 탭
+# 6. 매니저 탭 (부분 매도 로직 V7.53 적용)
 # ==========================================
 with tabs[3]:
     with st.expander("✍️ 보유 종목 수기 등록", expanded=False):
@@ -455,7 +454,7 @@ with tabs[3]:
             s_color = "blue" if "터틀" in st_n else ("green" if "눌림목" in st_n else "red")
             h1.markdown(f"#### {tkr} :{s_color}[({st_n})] - 총 {total_s}주")
             
-            if h2.button("매매 종료", key=f"ex_{tkr}"):
+            if h2.button("매매 종료 (전량)", key=f"ex_{tkr}"):
                 del st.session_state.positions[tkr]
                 save_data(st.session_state.positions)
                 st.rerun()
@@ -475,7 +474,6 @@ with tabs[3]:
                 trail_stop = lt[f'Low{config.get("trailing_days", 10)}']
                 stop_2n = avg_e - config.get("initial_stop_n", 2.0) * n
                 
-                # NaN 철벽 방어 및 자동 롤백
                 last_pyramid = pos.get('last_pyramid_level')
                 if pd.isna(last_pyramid) or last_pyramid is None: 
                     last_pyramid = pos['History'][-1]['price'] if pos['History'] else avg_e
@@ -547,7 +545,7 @@ with tabs[3]:
 
             lvls.append({'val': lt['Close'], 'name': '현재가', 'col': 'purple'})
 
-            # --- 차트 그리기 (NaN 렌더링 방어 추가) ---
+            # --- 차트 그리기 ---
             c_df = df.reset_index()[['Date', 'Close']].tail(60)
             base = alt.Chart(c_df).encode(x=alt.X('Date:T', title=None))
             line = base.mark_line(color='#1f77b4').encode(y=alt.Y('Close:Q', scale=alt.Scale(zero=False)))
@@ -568,7 +566,7 @@ with tabs[3]:
             
             st.altair_chart(alt.layer(line, *rules).properties(height=320), use_container_width=True)
 
-            # --- 전략별 추가 매수 안내 (NaN 체킹 강화) ---
+            # --- 전략별 추가 매수 안내 ---
             if "터틀" in st_n and add_shares_info >= 0:
                 if pos['Units'] < max_units:
                     if not pd.isna(add_point):
@@ -577,7 +575,7 @@ with tabs[3]:
                         else: 
                             st.info(f"💡 **불타기 대기:** ${add_point:.2f} 도달 시 **{add_shares_info}주** 추가 매수 권장 (현재 {pos['Units']}/{max_units}U)")
                     else:
-                        st.error("⚠️ 불타기 가격을 계산할 수 없습니다. 데이터가 충분하지 않습니다.")
+                        st.error("⚠️ 불타기 가격을 계산할 수 없습니다.")
                 else: 
                     st.write(f"✅ **유닛 풀(Full) 탑승:** 최대 허용 유닛({max_units}U) 보유 중")
             
@@ -592,21 +590,45 @@ with tabs[3]:
                 else: 
                     st.write(f"✅ **유닛 풀(Full) 탑승:** 최대 허용 유닛({max_units}U) 보유 중")
 
-            # --- 유닛 개별 상세 관리 ---
+            # --- [NEW] 유닛 개별 상세 관리 (부분 매도 통합 UI) ---
             c_p, c_s = st.columns(2)
-            u_p = c_p.number_input("추가 매수 단가", value=float(lt['Close']), key=f"up_{tkr}")
-            u_s = c_s.number_input("추가 매수 수량", value=1, key=f"us_{tkr}")
+            u_p = c_p.number_input("단가 입력 (매수 시에만 적용)", value=float(lt['Close']), key=f"up_{tkr}")
+            u_s = c_s.number_input("적용 수량 (주)", value=1, min_value=1, key=f"us_{tkr}")
             
-            b_a, b_d = st.columns(2)
-            if b_a.button("✅ 새 유닛 추가", key=f"ba_{tkr}", use_container_width=True):
+            b_a, b_s, b_d = st.columns(3)
+            
+            # 1. 추가 매수
+            if b_a.button("➕ 추가 매수", key=f"ba_{tkr}", use_container_width=True):
                 pos['History'].append({'price': u_p, 'shares': u_s})
                 pos['Units'] = len(pos['History'])
                 if "터틀" in st_n: 
                     pos['last_pyramid_level'] = u_p 
                 save_data(st.session_state.positions)
                 st.rerun()
+
+            # 2. 부분 매도 (LIFO 방식)
+            if b_s.button("➖ 부분 매도", key=f"bs_{tkr}", use_container_width=True):
+                if u_s >= total_s:
+                    del st.session_state.positions[tkr]
+                else:
+                    remain_to_sell = u_s
+                    while remain_to_sell > 0 and len(pos['History']) > 0:
+                        if pos['History'][-1]['shares'] > remain_to_sell:
+                            pos['History'][-1]['shares'] -= remain_to_sell
+                            remain_to_sell = 0
+                        else:
+                            remain_to_sell -= pos['History'][-1]['shares']
+                            pos['History'].pop()
+                    
+                    pos['Units'] = len(pos['History'])
+                    if "터틀" in st_n:
+                        pos['last_pyramid_level'] = pos['History'][-1]['price'] if pos['History'] else avg_e
                 
-            if b_d.button("🔙 최근 유닛 취소", key=f"bd_{tkr}", use_container_width=True) and len(pos['History']) > 1:
+                save_data(st.session_state.positions)
+                st.rerun()
+                
+            # 3. 최근 취소
+            if b_d.button("🔙 최근 취소", key=f"bd_{tkr}", use_container_width=True) and len(pos['History']) > 1:
                 pos['History'].pop()
                 pos['Units'] = len(pos['History'])
                 if "터틀" in st_n: 
@@ -636,7 +658,7 @@ with tabs[3]:
         )
 
 # ==========================================
-# 7. 분석 / 뉴스 탭 (전체 복원 완료)
+# 7. 분석 / 뉴스 탭
 # ==========================================
 with tabs[4]:
     st.subheader("🇺🇸 미국 주식 정밀 분석")

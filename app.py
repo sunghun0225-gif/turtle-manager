@@ -14,13 +14,13 @@ import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # ==========================================
-# 1. 설정 및 전략별 리스크 파라미터 (V7.5 적용)
+# 1. 설정 및 전략별 리스크 파라미터 (V7.51 적용)
 # ==========================================
 DB_FILE = 'internal_memory.csv'
 MAX_TOTAL_UNITS = 10
 CACHE_TTL = 300
 
-# [NEW] 전략별 개별 설정 적용
+# [NEW] 전략별 개별 설정 적용 (BB 리스크 2.0%로 조정 반영)
 STRATEGY_CONFIG = {
     "🚀 터틀-상승": {
         "risk_pct": 1.5,           
@@ -35,8 +35,8 @@ STRATEGY_CONFIG = {
         "max_unit_per_stock": 2,
     },
     "📉 BB-낙폭과대": {
-        "risk_pct": 2.5,
-        "max_unit_per_stock": 2,
+        "risk_pct": 2.0,           
+        "max_unit_per_stock": 2,   
     }
 }
 
@@ -85,7 +85,6 @@ def load_data():
             else:
                 history = []
 
-            # [NEW] last_pyramid_level 속성 추가 로드
             positions[row['Ticker']] = {
                 'Units': len(history),
                 'Highest': float(row['Highest']),
@@ -124,7 +123,7 @@ def save_data(positions):
 @st.cache_data(ttl=3600)
 def check_market_filter():
     try:
-        spy = safe_download("SPY", period="1y") # [NEW] safe_download 적용
+        spy = safe_download("SPY", period="1y") 
         if spy is None: return True, 0, 0, False
         
         if isinstance(spy.columns, pd.MultiIndex):
@@ -142,7 +141,7 @@ def check_market_filter():
 @st.cache_data(ttl=1800)
 def analyze_ticker(ticker):
     try:
-        df = safe_download(ticker) # [NEW] safe_download 적용
+        df = safe_download(ticker) 
         if df is None or len(df) < 200:
             return None
 
@@ -157,7 +156,6 @@ def analyze_ticker(ticker):
         df.drop(columns=['prev_close'], inplace=True)
         df['N'] = df['TR'].rolling(20).mean()
         
-        # [NEW] Donchian & Trailing 지표 추가 (20/55/10)
         df['High20'] = df['High'].rolling(20).max().shift(1)
         df['High55'] = df['High'].rolling(55).max().shift(1)
         df['Low10'] = df['Low'].rolling(10).min().shift(1)
@@ -181,7 +179,7 @@ def analyze_ticker(ticker):
         return None
 
 # ==========================================
-# 3-1. 보조 분석 툴 (SEC & 뉴스 - V7.43 복원)
+# 3-1. 보조 분석 툴 (SEC & 뉴스)
 # ==========================================
 FILING_LABELS = {
     "10-K": "📊 연간보고서", "10-Q": "📋 분기보고서", "8-K": "🔔 중요공시", "4": "👤 내부자거래"
@@ -249,7 +247,7 @@ def get_global_news():
 # ==========================================
 # 4. 메인 UI 및 사이드바
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.50", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.51", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state:
     st.session_state.positions = load_data()
@@ -259,7 +257,7 @@ cap_manwon = st.sidebar.number_input("시드머니 (만원)", value=200, step=50
 total_capital = int(cap_manwon * 10000)
 exchange_rate = st.sidebar.number_input("현재 환율 (₩/$)", value=1450, step=10)
 
-st.sidebar.info("💡 **위험 감수율(%) 안내:**\nV7.50부터는 일괄 설정 대신 종목 스캔 시 **전략별 최적화된 리스크**(터틀 1.5%, 눌림목 2.0%, 낙폭 2.5%)가 자동 적용됩니다.")
+st.sidebar.info("💡 **위험 감수율(%) 안내:**\nV7.50부터는 일괄 설정 대신 종목 스캔 시 **전략별 최적화된 리스크**(터틀 1.5%, 눌림목 2.0%, 낙폭 2.0%)가 자동 적용됩니다.")
 
 st.sidebar.divider()
 up_file = st.sidebar.file_uploader("📂 백업 CSV 업로드")
@@ -285,7 +283,7 @@ if up_file and st.sidebar.button("데이터 즉시 복구", type="primary"):
     except Exception as e:
         st.sidebar.error(f"❌ 파일 형식 오류: {e}")
 
-st.title("🐢 Turtle System Pro V7.50")
+st.title("🐢 Turtle System Pro V7.51")
 
 is_bull, spy_val, ma200_val, is_trending_up = check_market_filter()
 trend_label = "📈 MA200 우상향" if is_trending_up else "➡️ MA200 횡보/하향"
@@ -296,7 +294,6 @@ c1, c2, c3 = st.columns(3)
 t_units = sum(pos['Units'] for pos in st.session_state.positions.values())
 c1.metric("총 관리 유닛", f"{t_units}/{MAX_TOTAL_UNITS} U")
 
-# 계좌 위험도 표시 (근사치)
 avg_risk = sum([STRATEGY_CONFIG.get(p['Strategy'], {}).get("risk_pct", 2.0) * p['Units'] for p in st.session_state.positions.values()])
 c2.metric("계좌 전체 위험도", f"{avg_risk:.1f}%")
 c3.metric("현재 보유 종목", f"{len(st.session_state.positions)}개")
@@ -305,7 +302,7 @@ st.divider()
 tabs = st.tabs(["🚀 터틀", "📈 눌림목", "📉 BB낙폭", "📋 포지션 매니저", "🇺🇸 정밀 분석", "🌍 마켓 뉴스"])
 
 # ==========================================
-# 5. 스캐너 탭 (전략별 설정 연동)
+# 5. 스캐너 탭
 # ==========================================
 strategies = ["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"]
 
@@ -371,7 +368,7 @@ for i, s_name in enumerate(strategies):
                         st.rerun()
 
 # ==========================================
-# 6. 매니저 탭 (차트 연동 및 V7.5 로직 병합)
+# 6. 매니저 탭
 # ==========================================
 with tabs[3]:
     with st.expander("✍️ 보유 종목 수기 등록", expanded=False):
@@ -424,6 +421,10 @@ with tabs[3]:
             lvls = [{'val': avg_e, 'name': '평균단가', 'col': 'gray'}]
             add_shares_info = -1
             add_point = 0.0
+            bb_add_point = 0.0
+            strong_oversold = False
+            tp1 = 0.0
+            effective_sl = 0.0
 
             # --- 눌림목 전략 ---
             if "눌림목" in st_n:
@@ -436,7 +437,7 @@ with tabs[3]:
                 elif profit <= -0.04: st.error("🛑 **[위험 감지]** 4% 손절선을 이탈했습니다.")
                 else: st.info(f"✅ 순항 중 (현재 수익률: {profit:.2%})")
 
-            # --- BB-낙폭과대 전략 (V7.5 세부 적용) ---
+            # --- BB-낙폭과대 전략 (스마트 스케일인 적용) ---
             elif "BB" in st_n or "낙폭" in st_n:
                 n_val = lt['N']
                 sl_n = avg_e - 1.5 * n_val          
@@ -444,28 +445,38 @@ with tabs[3]:
                 effective_sl = max(sl_n, sl_bb)      
                 tp1 = lt['MA20']                     
                 tp2 = lt['MA20'] + lt['Std']         
+                
+                # [NEW] BB 전용 추가매수 기준점
+                bb_add_point = tp1 - 0.5 * lt['Std']
+                strong_oversold = lt['RSI'] < 33
 
                 lvls.append({'val': effective_sl, 'name': f'손절(1.5N/BB)', 'col': 'red'})
                 lvls.append({'val': sl_bb, 'name': 'BB하단(경계)', 'col': 'orange'})
+                lvls.append({'val': bb_add_point, 'name': 'MA20-0.5σ(타점)', 'col': 'gray'})
                 lvls.append({'val': tp1, 'name': 'MA20(1차익절)', 'col': 'blue'})
                 lvls.append({'val': tp2, 'name': 'MA20+1σ(2차익절)', 'col': 'darkblue'})
 
+                # [NEW] BB 전용 수량 계산
+                risk_pct = config["risk_pct"] / 100
+                risk_s = int((total_capital * risk_pct) / (n_val * exchange_rate)) if n_val > 0 else 1
+                cash_s = int((total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate))
+                add_shares_info = max(1, min(risk_s, cash_s))
+
                 if lt['Close'] >= tp2:
-                    st.success("💰 **[2차 목표 도달]** MA20+1σ 도달 → 전량 익절 검토.")
+                    st.success("💰 **[2차 목표 도달]** MA20+1σ 도달 → 전량 익절")
                 elif lt['Close'] >= tp1:
-                    st.success("📈 **[1차 목표 도달]** MA20 복귀. 50% 익절 + Stop to Breakeven 권장.")
+                    st.success("📈 **[1차 목표 도달]** MA20 도달 → 50% 익절 + Stop to Breakeven 권장")
                 elif lt['Close'] < effective_sl:
                     st.error("🛑 **[손절 조건]** 1.5N 또는 BB Lower 이탈. 즉시 손절 권장.")
                 else:
                     st.info(f"✅ 바닥 반등 중 (현재 수익률: {profit:.2%} | 손절: ${effective_sl:.2f})")
 
-            # --- 터틀 상승 전략 (V7.5 후행스탑/피라미딩 분리 적용) ---
+            # --- 터틀 상승 전략 ---
             else:  
                 n = lt['N']
                 trail_stop = lt[f'Low{config.get("trailing_days", 10)}']
                 stop_2n = avg_e - config.get("initial_stop_n", 2.0) * n
                 
-                # 피라미딩 기준점 불러오기 (없으면 평균단가 사용)
                 last_pyramid = pos.get('last_pyramid_level')
                 if last_pyramid is None:
                     last_pyramid = pos['History'][-1]['price'] if pos['History'] else avg_e
@@ -480,8 +491,6 @@ with tabs[3]:
                     st.error(f"🛑 **[터틀 청산]** {config.get('trailing_days', 10)}일 신저가 이탈 → 전량 매도 권장")
                 elif lt['Close'] < stop_2n:
                     st.error("🛑 **[위험]** 2N 초기손절선 이탈")
-                elif lt['Close'] >= add_point and pos['Units'] < max_units:
-                    st.success(f"🚀 **[불타기 타점 도달]** ${add_point:.2f} 돌파! 추가 매수 검토")
                 else:
                     st.info(f"✅ 추세 탑승 중 (현재 수익률: {profit:.2%})")
 
@@ -492,7 +501,7 @@ with tabs[3]:
 
             lvls.append({'val': lt['Close'], 'name': '현재가', 'col': 'purple'})
 
-            # --- 차트 그리기 (복원) ---
+            # --- 차트 그리기 ---
             c_df = df.reset_index()[['Date', 'Close']].tail(60)
             base = alt.Chart(c_df).encode(x=alt.X('Date:T', title=None))
             line = base.mark_line(color='#1f77b4').encode(y=alt.Y('Close:Q', scale=alt.Scale(zero=False)))
@@ -510,6 +519,7 @@ with tabs[3]:
 
             st.altair_chart(alt.layer(line, *rules).properties(height=320), use_container_width=True)
 
+            # --- [NEW] 전략별 추가 매수/상태 안내 (차트 하단) ---
             if "터틀" in st_n and add_shares_info >= 0:
                 if pos['Units'] < max_units:
                     if lt['Close'] >= add_point:
@@ -518,6 +528,17 @@ with tabs[3]:
                         st.info(f"💡 **불타기 대기:** ${add_point:.2f} 도달 시 **{add_shares_info}주** 추가 매수 권장 (현재 {pos['Units']}/{max_units}U)")
                 else:
                     st.write(f"✅ **유닛 풀(Full) 탑승:** 해당 전략의 최대 유닛({max_units}U) 보유 중.")
+            
+            elif ("BB" in st_n or "낙폭" in st_n) and add_shares_info >= 0:
+                if pos['Units'] < max_units:
+                    if lt['Close'] >= tp1 and lt['Close'] <= bb_add_point and 35 <= lt['RSI'] <= 45:
+                        st.warning(f"📌 **[BB 2차 진입 기회]** MA20 -0.5σ 재진입! **{add_shares_info}주** 추가 매수 검토 (현재 {pos['Units']}/{max_units}U)")
+                    elif lt['Close'] <= lt['BB_Lower'] * 1.02 and strong_oversold and lt['Close'] > effective_sl:
+                        st.warning(f"⚠️ **[강한 Oversold]** BB 하단 부근 + RSI {lt['RSI']:.1f} → **{add_shares_info}주** 저가 평균화 기회 (현재 {pos['Units']}/{max_units}U)")
+                    else:
+                        st.info(f"💡 **대기 중:** 안전한 추가 매수 타점(MA20-0.5σ 재진입 또는 강한 과매도)을 기다립니다. (현재 {pos['Units']}/{max_units}U)")
+                else:
+                    st.write(f"✅ **최대 유닛 도달:** BB 전략 최대 방어 유닛({max_units}U) 보유 중. 추가 진입 금지.")
 
             # --- 유닛 개별 상세 관리 ---
             c_p, c_s = st.columns(2)
@@ -529,7 +550,7 @@ with tabs[3]:
                 pos['History'].append({'price': u_p, 'shares': u_s})
                 pos['Units'] = len(pos['History'])
                 if "터틀" in st_n:
-                    pos['last_pyramid_level'] = u_p # [NEW] 불타기 진행 시 기준점 갱신
+                    pos['last_pyramid_level'] = u_p 
                 save_data(st.session_state.positions)
                 st.rerun()
 
@@ -537,7 +558,7 @@ with tabs[3]:
                 pos['History'].pop()
                 pos['Units'] = len(pos['History'])
                 if "터틀" in st_n:
-                    pos['last_pyramid_level'] = pos['History'][-1]['price'] # [NEW] 취소 시 기준점 롤백
+                    pos['last_pyramid_level'] = pos['History'][-1]['price'] 
                 save_data(st.session_state.positions)
                 st.rerun()
 
@@ -562,7 +583,7 @@ with tabs[3]:
         )
 
 # ==========================================
-# 7. 분석 / 뉴스 탭 (V7.43 완전 복원)
+# 7. 분석 / 뉴스 탭
 # ==========================================
 with tabs[4]:
     st.subheader("🇺🇸 미국 주식 정밀 분석")

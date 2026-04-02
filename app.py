@@ -69,7 +69,7 @@ def get_sp500_tickers():
 TICKERS = get_sp500_tickers()
 
 # ==========================================
-# 2. 데이터 입출력
+# 2. 데이터 입출력 (장부 기록 방식 대응)
 # ==========================================
 def load_data():
     if os.path.exists(DB_FILE):
@@ -84,12 +84,17 @@ def load_data():
             else:
                 history = []
 
+            # 과거 데이터 호환용 Type 주입
+            for h in history:
+                if 'type' not in h:
+                    h['type'] = 'Buy'
+
             lp_level = row.get('last_pyramid_level')
             if pd.isna(lp_level): 
                 lp_level = None
 
             positions[row['Ticker']] = {
-                'Units': len(history),
+                'Units': len([h for h in history if h.get('type') == 'Buy']),
                 'Highest': float(row['Highest']),
                 'History': history,
                 'Strategy': row['Strategy'] if 'Strategy' in df.columns else '🚀 터틀-상승',
@@ -105,7 +110,7 @@ def save_data(positions):
             history = data.get('History', [])
             rows.append({
                 'Ticker': tkr,
-                'Units': len(history),
+                'Units': data.get('Units', 1),
                 'Highest': data['Highest'],
                 'History': json.dumps(history),
                 'Strategy': data.get('Strategy', '🚀 터틀-상승'),
@@ -270,7 +275,7 @@ def get_global_news():
 # ==========================================
 # 4. 메인 UI 및 사이드바
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.53", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.54", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state:
     st.session_state.positions = load_data()
@@ -292,13 +297,14 @@ if up_file and st.sidebar.button("데이터 즉시 복구", type="primary"):
         for _, row in df.iterrows():
             raw = row['History']
             history = json.loads(raw) if isinstance(raw, str) else (raw if isinstance(raw, list) else [])
+            for h in history:
+                if 'type' not in h: h['type'] = 'Buy'
             
             lp_level = row.get('last_pyramid_level')
-            if pd.isna(lp_level):
-                lp_level = None
+            if pd.isna(lp_level): lp_level = None
                 
             recovered[row['Ticker']] = {
-                'Units': len(history), 
+                'Units': len([h for h in history if h.get('type') == 'Buy']), 
                 'Highest': float(row['Highest']), 
                 'History': history, 
                 'Strategy': row['Strategy'],
@@ -311,7 +317,7 @@ if up_file and st.sidebar.button("데이터 즉시 복구", type="primary"):
     except Exception as e: 
         st.sidebar.error(f"❌ 파일 형식 오류: {e}")
 
-st.title("🐢 Turtle System Pro V7.53")
+st.title("🐢 Turtle System Pro V7.54")
 
 is_bull, spy_val, ma200_val, is_trending_up = check_market_filter()
 trend_label = "📈 MA200 우상향" if is_trending_up else "➡️ MA200 횡보/하향"
@@ -397,7 +403,7 @@ for i, s_name in enumerate(strategies):
                         st.session_state.positions[r['tkr']] = {
                             'Units': 1, 
                             'Highest': r['p'], 
-                            'History': [{'price': r['p'], 'shares': r['sh']}], 
+                            'History': [{'type': 'Buy', 'price': r['p'], 'shares': r['sh']}], 
                             'Strategy': s_name, 
                             'last_pyramid_level': r['p']
                         }
@@ -405,7 +411,7 @@ for i, s_name in enumerate(strategies):
                         st.rerun()
 
 # ==========================================
-# 6. 매니저 탭 (부분 매도 로직 V7.53 적용)
+# 6. 매니저 탭 (장부형식 V7.54 적용)
 # ==========================================
 with tabs[3]:
     with st.expander("✍️ 보유 종목 수기 등록", expanded=False):
@@ -420,7 +426,7 @@ with tabs[3]:
                 st.session_state.positions[m_t] = {
                     'Units': 1, 
                     'Highest': m_p,
-                    'History': [{'price': m_p, 'shares': m_h}],
+                    'History': [{'type': 'Buy', 'price': m_p, 'shares': m_h}],
                     'Strategy': m_s, 
                     'last_pyramid_level': m_p
                 }
@@ -430,19 +436,51 @@ with tabs[3]:
     st.divider()
 
     for tkr, pos in list(st.session_state.positions.items()):
-        pos['Units'] = len(pos['History'])
         df = analyze_ticker(tkr)
-        
-        if df is None: 
-            continue
+        if df is None: continue
 
         lt = df.iloc[-1]
         st_n = pos['Strategy']
         config = STRATEGY_CONFIG.get(st_n, {"risk_pct": DEFAULT_RISK_PCT, "max_unit_per_stock": 2})
         max_units = config.get("max_unit_per_stock", 2)
         
-        total_s = sum(h['shares'] for h in pos['History'])
-        avg_e = sum(h['price'] * h['shares'] for h in pos['History']) / total_s if total_s > 0 else 0.0
+        # --- [NEW] 매매 장부(Ledger) 계산 로직 ---
+        total_s = 0
+        avg_e = 0.0
+        active_lots = []
+        
+        for h in pos['History']:
+            h_type = h.get('type', 'Buy')
+            if h_type == 'Buy':
+                new_total = total_s + h['shares']
+                # 매수 시에는 가중 평균으로 평단가 조절
+                avg_e = (avg_e * total_s + h['price'] * h['shares']) / new_total if new_total > 0 else 0
+                total_s = new_total
+                active_lots.append({'price': h['price'], 'shares': h['shares']})
+            elif h_type == 'Sell':
+                # 매도 시에는 수량만 차감, 전체 평단가는 불변 (이동평균법)
+                total_s -= h['shares']
+                if total_s <= 0:
+                    total_s = 0
+                    avg_e = 0.0
+                
+                # 유닛수(불타기 횟수) 파악을 위한 후입선출(LIFO) 계산
+                rem_sell = h['shares']
+                while rem_sell > 0 and active_lots:
+                    if active_lots[-1]['shares'] > rem_sell:
+                        active_lots[-1]['shares'] -= rem_sell
+                        rem_sell = 0
+                    else:
+                        rem_sell -= active_lots[-1]['shares']
+                        active_lots.pop()
+        
+        # 내부 관리 유닛 및 피라미딩 단가 최신화
+        pos['Units'] = len(active_lots)
+        if active_lots:
+            pos['last_pyramid_level'] = active_lots[-1]['price']
+        else:
+            pos['last_pyramid_level'] = avg_e
+
         profit = (lt['Close'] / avg_e - 1) if avg_e > 0 else 0.0
 
         if lt['Close'] > pos['Highest']: 
@@ -452,14 +490,14 @@ with tabs[3]:
         with st.container(border=True):
             h1, h2 = st.columns([4, 1])
             s_color = "blue" if "터틀" in st_n else ("green" if "눌림목" in st_n else "red")
-            h1.markdown(f"#### {tkr} :{s_color}[({st_n})] - 총 {total_s}주")
+            h1.markdown(f"#### {tkr} :{s_color}[({st_n})] - 잔여 {total_s}주")
             
-            if h2.button("매매 종료 (전량)", key=f"ex_{tkr}"):
+            if h2.button("전량 매매 종료", key=f"ex_{tkr}"):
                 del st.session_state.positions[tkr]
                 save_data(st.session_state.positions)
                 st.rerun()
 
-            lvls = [{'val': avg_e, 'name': '평균단가', 'col': 'gray'}]
+            lvls = [{'val': avg_e, 'name': '전체 평단가', 'col': 'gray'}]
             
             add_shares_info = -1
             add_point = 0.0
@@ -473,12 +511,8 @@ with tabs[3]:
                 n = lt['N']
                 trail_stop = lt[f'Low{config.get("trailing_days", 10)}']
                 stop_2n = avg_e - config.get("initial_stop_n", 2.0) * n
-                
                 last_pyramid = pos.get('last_pyramid_level')
-                if pd.isna(last_pyramid) or last_pyramid is None: 
-                    last_pyramid = pos['History'][-1]['price'] if pos['History'] else avg_e
-                
-                add_point = last_pyramid + config.get("pyramid_n", 0.5) * n
+                add_point = last_pyramid + config.get("pyramid_n", 0.5) * n if last_pyramid else avg_e
                 
                 lvls.append({'val': stop_2n, 'name': '초기손절(2N)', 'col': 'red'})
                 lvls.append({'val': trail_stop, 'name': f'{config.get("trailing_days", 10)}일신저가(Trailing)', 'col': 'green'})
@@ -501,11 +535,9 @@ with tabs[3]:
                 n_val = lt['N']
                 tp1 = lt['MA20']
                 tp2 = lt['MA20'] + lt['Std']
-                
                 sl_n = avg_e - 1.5 * n_val          
                 sl_bb = lt['BB_Lower']               
                 effective_sl = max(sl_n, sl_bb)      
-                
                 bb_add_point = tp1 - 0.5 * lt['Std']
                 strong_oversold = lt['RSI'] < 33
 
@@ -517,7 +549,7 @@ with tabs[3]:
                 if lt['Close'] >= tp2:
                     st.success("💰 **[2차 목표 도달]** MA20+1σ 도달 → 전량 익절 검토")
                 elif lt['Close'] >= tp1:
-                    st.success("📈 **[1차 목표 도달]** MA20 복귀 → 50% 익절 + Stop to Breakeven 권장")
+                    st.success("📈 **[1차 목표 도달]** MA20 복귀 → 부분 익절 + Stop to Breakeven 권장")
                 elif lt['Close'] < effective_sl:
                     st.error("🛑 **[손절 조건]** 1.5N 또는 BB Lower 이탈 → 즉시 손절 권장")
                 else:
@@ -532,7 +564,6 @@ with tabs[3]:
             else: 
                 tp = avg_e * 1.06
                 sl = avg_e * 0.96
-                
                 lvls.append({'val': tp, 'name': '6% 익절선', 'col': 'blue'})
                 lvls.append({'val': sl, 'name': '4% 손절선', 'col': 'red'})
 
@@ -590,53 +621,42 @@ with tabs[3]:
                 else: 
                     st.write(f"✅ **유닛 풀(Full) 탑승:** 최대 허용 유닛({max_units}U) 보유 중")
 
-            # --- [NEW] 유닛 개별 상세 관리 (부분 매도 통합 UI) ---
+            # --- [NEW] 장부형 매수/부분매도 통합 입력 UI ---
             c_p, c_s = st.columns(2)
-            u_p = c_p.number_input("단가 입력 (매수 시에만 적용)", value=float(lt['Close']), key=f"up_{tkr}")
-            u_s = c_s.number_input("적용 수량 (주)", value=1, min_value=1, key=f"us_{tkr}")
+            u_p = c_p.number_input("거래 단가 ($)", value=float(lt['Close']), key=f"up_{tkr}")
+            u_s = c_s.number_input("거래 수량 (주)", value=1, min_value=1, key=f"us_{tkr}")
             
             b_a, b_s, b_d = st.columns(3)
             
-            # 1. 추가 매수
             if b_a.button("➕ 추가 매수", key=f"ba_{tkr}", use_container_width=True):
-                pos['History'].append({'price': u_p, 'shares': u_s})
-                pos['Units'] = len(pos['History'])
-                if "터틀" in st_n: 
-                    pos['last_pyramid_level'] = u_p 
+                pos['History'].append({'type': 'Buy', 'price': u_p, 'shares': u_s})
                 save_data(st.session_state.positions)
                 st.rerun()
 
-            # 2. 부분 매도 (LIFO 방식)
             if b_s.button("➖ 부분 매도", key=f"bs_{tkr}", use_container_width=True):
                 if u_s >= total_s:
                     del st.session_state.positions[tkr]
                 else:
-                    remain_to_sell = u_s
-                    while remain_to_sell > 0 and len(pos['History']) > 0:
-                        if pos['History'][-1]['shares'] > remain_to_sell:
-                            pos['History'][-1]['shares'] -= remain_to_sell
-                            remain_to_sell = 0
-                        else:
-                            remain_to_sell -= pos['History'][-1]['shares']
-                            pos['History'].pop()
-                    
-                    pos['Units'] = len(pos['History'])
-                    if "터틀" in st_n:
-                        pos['last_pyramid_level'] = pos['History'][-1]['price'] if pos['History'] else avg_e
-                
+                    pos['History'].append({'type': 'Sell', 'price': u_p, 'shares': u_s})
                 save_data(st.session_state.positions)
                 st.rerun()
                 
-            # 3. 최근 취소
-            if b_d.button("🔙 최근 취소", key=f"bd_{tkr}", use_container_width=True) and len(pos['History']) > 1:
+            if b_d.button("🔙 최근 거래 취소", key=f"bd_{tkr}", use_container_width=True) and len(pos['History']) > 1:
                 pos['History'].pop()
-                pos['Units'] = len(pos['History'])
-                if "터틀" in st_n: 
-                    pos['last_pyramid_level'] = pos['History'][-1]['price'] 
                 save_data(st.session_state.positions)
                 st.rerun()
                 
-            st.table(pd.DataFrame(pos['History']).style.format({'price': '${:.2f}'}))
+            # --- [NEW] 매매 장부 내역 표기 테이블 ---
+            df_hist = pd.DataFrame(pos['History'])
+            if 'type' not in df_hist.columns:
+                df_hist['type'] = 'Buy'
+            
+            display_df = pd.DataFrame({
+                '구분': df_hist['type'].map({'Buy': '🔴 매수', 'Sell': '🔵 매도'}),
+                '단가': df_hist['price'].apply(lambda x: f"${x:.2f}"),
+                '수량': df_hist['shares'].astype(str) + "주"
+            })
+            st.table(display_df)
 
 # --- 백업 버튼 ---
     if st.session_state.positions:

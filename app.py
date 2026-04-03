@@ -31,7 +31,7 @@ def safe_download(ticker_symbol, period="1y", retries=3):
     return None
 
 # ==========================================
-# 2. S&P 500 + 나스닥 100 우량주 유니버스 (초고변동성 잡주 제거 완료)
+# 2. S&P 500 + 나스닥 100 우량주 유니버스 (잡주 제외)
 # ==========================================
 TICKERS = [
     'A', 'AAPL', 'ABBV', 'ABT', 'ACGL', 'ACN', 'ADBE', 'ADI', 'ADM', 'ADP', 'ADSK', 'AEE', 'AEP', 'AES', 'AFL', 'AIG', 'AIZ', 'AJG', 'AKAM', 'ALB', 'ALGN', 'ALL', 'ALLE', 'AMAT', 'AMCR', 'AMD', 'AME', 'AMGN', 'AMP', 'AMT', 'AMZN', 'ANET', 'ANSS', 'AON', 'AOS', 'APA', 'APD', 'APH', 'APTV', 'ARE', 'ATO', 'AVB', 'AVGO', 'AWK', 'AXON', 'AXP', 'AZO', 
@@ -169,7 +169,7 @@ def get_global_news():
     except: return []
 
 # ==========================================
-# 5. 메인 UI 및 사이드바
+# 5. 메인 UI 및 사이드바 (동적 시장 가이드 추가)
 # ==========================================
 st.set_page_config(page_title="Turtle Pro V7.55 (Scaling Out)", layout="centered", page_icon="🐢")
 
@@ -183,8 +183,30 @@ st.sidebar.info(f"💡 **현재 유니버스:**\nS&P 500, 나스닥 100 등 총 
 
 st.title("🐢 Turtle System Pro V7.55")
 is_bull, spy_val, ma200_val, is_trending = check_market_filter()
-if is_bull: st.success(f"🟢 시장 통과 | SPY: ${spy_val:.2f} / MA200: ${ma200_val:.2f} | {'📈 상승 추세' if is_trending else '➡️ 횡보'}")
-else: st.error(f"🔴 시장 경고 | SPY: ${spy_val:.2f} / MA200: ${ma200_val:.2f} | {'📈 상승 추세' if is_trending else '➡️ 횡보/하락'}")
+
+if is_bull: 
+    st.success(f"🟢 시장 통과 | SPY: ${spy_val:.2f} / MA200: ${ma200_val:.2f} | {'📈 상승 추세' if is_trending else '➡️ 횡보'}")
+else: 
+    st.error(f"🔴 시장 경고 | SPY: ${spy_val:.2f} / MA200: ${ma200_val:.2f} | {'📈 상승 추세' if is_trending else '➡️ 횡보/하락'}")
+
+# --- [핵심] 시장 상황별 맞춤 트레이딩 가이드 ---
+with st.expander("💡 현재 시장 상황 맞춤 트레이딩 가이드", expanded=True):
+    if spy_val >= ma200_val and is_trending:
+        st.markdown("#### 🌞 [완벽한 강세장] 적극적인 추세 추종")
+        st.write("지수가 장기 생명선(200일선) 위에 있고 추세도 살아있는 **최적의 장세**입니다.")
+        st.markdown("- **1순위 (적극 추천):** `📈 20일-눌림목` (우상향 주도주의 건강한 조정을 공략)\n- **2순위:** `🚀 터틀-상승` (강력한 돌파 매매 가능)\n- **비추천:** `📉 BB-낙폭과대` (초우량주는 하단 밴드까지 잘 떨어지지 않음)")
+    elif spy_val >= ma200_val and not is_trending:
+        st.markdown("#### ⛅ [횡보/조정장] 돌파 매매 주의")
+        st.write("지수가 200일선 위에는 있지만, 단기적으로 힘이 빠져 횡보하고 있습니다.")
+        st.markdown("- **1순위 (추천):** `📈 20일-눌림목` (박스권 하단 지지 확인 후 매수)\n- **2순위:** `📉 BB-낙폭과대` (단기 급락 종목 위주)\n- **❌ 금지:** `🚀 터틀-상승` (가짜 돌파에 속아 고점에 물릴 위험 큼)")
+    elif spy_val < ma200_val and is_trending:
+        st.markdown("#### ⛈️ [강세장 속 폭락] 패닉 셀링 줍기")
+        st.write("장기 펀더멘털은 견고하나 악재/투매로 지수가 200일선을 깬 **공포 장세**입니다.")
+        st.markdown("- **1순위 (강력 추천):** `📉 BB-낙폭과대` (억울하게 폭락한 우량주의 V자 반등을 노리는 바닥 쇼핑 찬스)\n- **⚠️ 주의:** `📈 20일-눌림목` (지하실로 뚫고 갈 수 있으므로 평소 비중의 절반만 접근)\n- **❌ 절대 금지:** `🚀 터틀-상승`")
+    else:
+        st.markdown("#### ❄️ [완벽한 빙하기] 현금 관망 최우선")
+        st.write("지수가 200일선 아래에 있고 추세마저 꺾인 **대세 하락장**입니다.")
+        st.markdown("- **1순위:** **현금 관망 (스캐너 사용 자제)**\n- **2순위 (초단기 대응):** `📉 BB-낙폭과대` (극단적 투매 시 3분할 트레일링 스탑으로 짧게만 대응)\n- **❌ 절대 금지:** `🚀 터틀-상승`, `📈 20일-눌림목`")
 
 tabs = st.tabs(["🚀 터틀", "📈 눌림목", "📉 BB낙폭", "📋 매니저", "🇺🇸 분석", "🌍 뉴스", "📊 일지"])
 
@@ -285,7 +307,6 @@ with tabs[3]:
                 dyn_stop, add_pt, trail = base_p - (2.0 * lt['N']), base_p + (0.5 * lt['N']), lt['Low10']
                 lvls.extend([{'val': dyn_stop, 'name': '통합손절', 'col': 'red'}, {'val': trail, 'name': 'Trailing', 'col': 'green'}, {'val': add_pt, 'name': '불타기', 'col': 'orange'}])
             
-            # [핵심] BB-낙폭과대 & 눌림목 양쪽 모두에 3분할 익절 & 트레일링 스탑 적용
             elif "BB" in st_n or "낙폭과대" in st_n or "눌림목" in st_n:
                 profit_highest = (pos['Highest'] / avg_e - 1) if avg_e > 0 else 0
                 
@@ -309,7 +330,6 @@ with tabs[3]:
                     {'val': tp3, 'name': '3차(+15%)', 'col': 'purple'}
                 ])
                 
-                # 가이드 메시지 출력 로직
                 if lt['Close'] < dyn_sl: 
                     st.error(f"🛑 {sl_name} 이탈! 전량 매도 권장 (${dyn_sl:.2f})")
                 elif lt['Close'] >= tp3: 
@@ -323,7 +343,6 @@ with tabs[3]:
 
             lvls.append({'val': lt['Close'], 'name': '현재가', 'col': 'purple'})
             
-            # 차트 그리기
             c_df = df.reset_index()[['Date', 'Close']].tail(60)
             chart = alt.layer(alt.Chart(c_df).mark_line(color='#1f77b4').encode(x=alt.X('Date:T', title=None), y=alt.Y('Close:Q', scale=alt.Scale(zero=False))), *[alt.layer(alt.Chart(pd.DataFrame({'y': [l['val']]})).mark_rule(strokeDash=[5, 5], color=l['col']).encode(y='y:Q'), alt.Chart(pd.DataFrame({'Date': [c_df['Date'].max()], 'y': [l['val']], 't': [f"{l['name']}: ${l['val']:.2f}"]})).mark_text(align='left', dx=5, dy=-4, color=l['col'], fontWeight='bold').encode(x='Date:T', y='y:Q', text='t:N')) for l in lvls if not pd.isna(l['val'])]).properties(height=320)
             st.altair_chart(chart, use_container_width=True)

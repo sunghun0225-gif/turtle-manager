@@ -128,7 +128,7 @@ def get_global_news():
 # ==========================================
 # 4. 메인 UI 및 사이드바
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.55 (Stable)", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.55 (Final)", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state:
     st.session_state.positions, st.session_state.global_ledger = load_data()
@@ -150,7 +150,6 @@ if up_file := st.sidebar.file_uploader("📂 백업 CSV 업로드"):
 
 st.title("🐢 Turtle System Pro V7.55")
 is_bull, spy_val, ma200_val, is_trending = check_market_filter()
-# [패치] 추세 텍스트 UI 반영
 if is_bull:
     st.success(f"🟢 시장 통과 | SPY: ${spy_val:.2f} / MA200: ${ma200_val:.2f} | {'📈 상승 추세' if is_trending else '➡️ 횡보'}")
 else:
@@ -214,13 +213,13 @@ with tabs[3]:
         mc1, mc2, mc3, mc4 = st.columns(4)
         m_t = mc1.text_input("티커").upper()
         m_s = mc2.selectbox("전략", ["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"])
-        m_p, m_h = mc3.number_input("진입가", 0.0), mc4.number_input("수량", 1.0, min_value=0.0001, format="%.4f")
+        # [수정] TypeError 방지를 위해 value 명시
+        m_p, m_h = mc3.number_input("진입가", value=0.0), mc4.number_input("수량", value=1.0, min_value=0.0001, format="%.4f")
         if st.button("➕ 등록", use_container_width=True) and m_t:
             st.session_state.positions[m_t] = {'Units': 1, 'Highest': m_p, 'History': [{'type': 'Buy', 'price': m_p, 'shares': m_h}], 'Strategy': m_s, 'last_pyramid_level': m_p}
             log_trade(m_t, 'Buy', m_p, m_h)
             st.rerun()
 
-    # [패치] I/O 최적화를 위한 플래그 추가
     needs_save = False
 
     for tkr, pos in list(st.session_state.positions.items()):
@@ -241,7 +240,7 @@ with tabs[3]:
                     if active_lots[-1]['shares'] > rem_sell: active_lots[-1]['shares'] -= rem_sell; rem_sell = 0
                     else: rem_sell -= active_lots[-1]['shares']; active_lots.pop()
         
-        # [패치] 잔여 수량이 0.0001 이하로 떨어지면 포지션 자동 삭제 처리
+        # 잔여 수량이 거의 없으면 포지션 자동 삭제 처리
         if total_s <= 0.0001:
             del st.session_state.positions[tkr]
             needs_save = True
@@ -250,7 +249,6 @@ with tabs[3]:
         pos['Units'], pos['last_pyramid_level'] = len(active_lots), active_lots[-1]['price'] if active_lots else avg_e
         profit = (lt['Close'] / avg_e - 1) if avg_e > 0 else 0.0
         
-        # [패치] Highest 업데이트 시 needs_save 플래그만 켬
         if lt['Close'] > pos['Highest']: 
             pos['Highest'] = lt['Close']
             needs_save = True
@@ -264,7 +262,6 @@ with tabs[3]:
                 log_trade(tkr, 'Sell (All)', lt['Close'], total_s, (lt['Close'] - avg_e) * total_s)
                 st.rerun()
 
-            # [패치] bb_add 등 변수 초기화로 NameError 방지
             lvls, add_shares, add_pt, bb_add, eff_sl = [{'val': avg_e, 'name': '평단가', 'col': 'gray'}], -1.0, 0.0, 0.0, 0.0
 
             if "터틀" in st_n:
@@ -303,8 +300,9 @@ with tabs[3]:
                     st.warning(f"🔔 추가 매수 타점! **{add_shares:.4f}주** 추가 검토") if ("터틀" in st_n and lt['Close'] >= add_pt) or ("BB" in st_n and lt['Close'] <= bb_add) else st.info(f"💡 대기 중: 타점 도달 시 **{add_shares:.4f}주** 권장")
                 else: st.write("✅ 최대 허용 유닛 보유 중")
 
+            # [수정] TypeError 방지를 위해 value 명시
             c_p, c_s = st.columns(2)
-            u_p, u_s = c_p.number_input("단가", float(lt['Close']), key=f"up_{tkr}"), c_s.number_input("수량", 1.0, min_value=0.0001, format="%.4f", key=f"us_{tkr}")
+            u_p, u_s = c_p.number_input("단가", value=float(lt['Close']), key=f"up_{tkr}"), c_s.number_input("수량", value=1.0, min_value=0.0001, format="%.4f", key=f"us_{tkr}")
             b_a, b_s, b_d = st.columns(3)
             
             if b_a.button("➕ 부분 매수", key=f"ba_{tkr}", use_container_width=True):
@@ -318,7 +316,6 @@ with tabs[3]:
                     log_trade(tkr, 'Sell (Partial)', u_p, u_s, (u_p - avg_e) * u_s)
                 st.rerun()
             if b_d.button("🔙 거래 취소", key=f"bd_{tkr}", use_container_width=True) and len(pos['History']) > 1:
-                # [패치] 루프 변수명 충돌 방지를 위해 idx로 수정
                 for idx in range(len(st.session_state.global_ledger)-1, -1, -1):
                     if st.session_state.global_ledger[idx]['ticker'] == tkr: 
                         st.session_state.global_ledger.pop(idx)
@@ -329,7 +326,6 @@ with tabs[3]:
                 
             st.table(pd.DataFrame([{'구분': '🔴 매수' if h.get('type','Buy') == 'Buy' else '🔵 매도', '단가': f"${h['price']:.2f}", '수량': f"{h['shares']:.4f}주"} for h in pos['History']]))
 
-    # [패치] 루프 종료 후 한 번만 저장 (성능 최적화)
     if needs_save:
         save_data(st.session_state.positions, st.session_state.global_ledger)
 

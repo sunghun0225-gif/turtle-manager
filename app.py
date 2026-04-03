@@ -31,27 +31,33 @@ def safe_download(ticker_symbol, period="1y", retries=3):
     return None
 
 # ==========================================
-# 2. [신규] 강력한 '핵심 600 유니버스' 구축 
+# 2. 강력한 '핵심 600 유니버스' 구축 (방탄 스크래핑)
 # ==========================================
-@st.cache_data(ttl=86400) # 하루에 한 번만 리스트 갱신
+@st.cache_data(ttl=86400)
 def get_sp500_tickers():
     try:
         html = requests.get('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies', headers={'User-Agent': 'Mozilla/5.0'}).text
-        return [t.replace('.', '-') for t in pd.read_html(html)[0]['Symbol'].tolist()]
-    except: return ['SPY']
+        # 표 순서가 바뀌어도 자동으로 Symbol 열을 찾아냄
+        for tb in pd.read_html(html):
+            if 'Symbol' in tb.columns:
+                return [t.replace('.', '-') for t in tb['Symbol'].tolist()]
+    except: pass
+    return ['SPY']
 
 @st.cache_data(ttl=86400)
 def get_nasdaq100_tickers():
     try:
         html = requests.get('https://en.wikipedia.org/wiki/Nasdaq-100', headers={'User-Agent': 'Mozilla/5.0'}).text
-        return [t.replace('.', '-') for t in pd.read_html(html)[4]['Ticker'].tolist()]
-    except: return ['QQQ']
+        # 표 순서가 바뀌어도 자동으로 Ticker 열을 찾아냄
+        for tb in pd.read_html(html):
+            if 'Ticker' in tb.columns:
+                return [t.replace('.', '-') for t in tb['Ticker'].tolist()]
+    except: pass
+    return ['QQQ']
 
 # 러셀 2000 및 XBI (바이오) 핵심 고변동성/거래대금 상위 종목 수동 편입
 CORE_RUSSELL_XBI = [
-    # XBI (바이오테크 핵심)
     'NBIX', 'EXAS', 'SRPT', 'UTHR', 'CRSP', 'EDIT', 'NTLA', 'BEAM', 'INCY', 'BMRN', 'ALNY', 'SGEN', 'MCRB', 'PRTA',
-    # 러셀 2000 / 기타 모멘텀 중소형주
     'COIN', 'MSTR', 'HOOD', 'PLTR', 'CELH', 'DKNG', 'CVNA', 'RBLX', 'AFRM', 'SOFI', 'SYM', 'IOT', 'FOUR', 'DUOL', 'CART'
 ]
 
@@ -156,7 +162,7 @@ def get_global_news():
 # ==========================================
 # 5. 메인 UI 및 사이드바
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.55 (Ultimate Universe)", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.55 (Final Secure)", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state:
     st.session_state.positions, st.session_state.global_ledger = load_data()
@@ -388,4 +394,3 @@ with tabs[6]:
         st.dataframe(df_l.iloc[::-1].reset_index(drop=True), use_container_width=True)
     with st.expander("⚠️ 관리자"):
         if st.button("🗑️ 장부 초기화"): st.session_state.global_ledger = []; save_data(st.session_state.positions, []); st.rerun()
-

@@ -62,7 +62,7 @@ def get_sp500_tickers():
         html = requests.get(url, headers=headers, verify=False, timeout=10).text
         table = pd.read_html(html)[0]
         tickers = table['Symbol'].tolist()
-        return [ticker.replace('.', '-') for ticker in tickers]
+        return [ticker.replace('.', '-') for tickers in tickers]
     except:
         return ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'BRK-B', 'JNJ', 'JPM']
 
@@ -294,7 +294,6 @@ def get_global_news():
 # ==========================================
 st.set_page_config(page_title="Turtle Pro V7.55", layout="centered", page_icon="🐢")
 
-# [NEW] 세션 상태 초기화 (포지션 및 누적 장부)
 if "positions" not in st.session_state or "global_ledger" not in st.session_state:
     pos_data, ledger_data = load_data()
     st.session_state.positions = pos_data
@@ -442,7 +441,6 @@ for i, s_name in enumerate(strategies):
                             'last_pyramid_level': r['p']
                         }
                         
-                        # [NEW] 스캐너 등록 시 장부 기록
                         st.session_state.global_ledger.append({
                             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                             'ticker': r['tkr'],
@@ -475,7 +473,6 @@ with tabs[3]:
                     'last_pyramid_level': m_p
                 }
                 
-                # [NEW] 수기 등록 시 장부 기록
                 st.session_state.global_ledger.append({
                     'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'ticker': m_t,
@@ -563,24 +560,31 @@ with tabs[3]:
             tp1 = 0.0
             effective_sl = 0.0
 
-            # --- 터틀 전략 ---
+            # ==========================================
+            # 터틀 전략: 차수별 유동적 손절가 적용
+            # ==========================================
             if "터틀" in st_n:
                 n = lt['N']
                 trail_stop = lt[f'Low{config.get("trailing_days", 10)}']
-                stop_2n = avg_e - config.get("initial_stop_n", 2.0) * n
                 last_pyramid = pos.get('last_pyramid_level')
-                add_point = last_pyramid + config.get("pyramid_n", 0.5) * n if last_pyramid else avg_e
                 
-                lvls.append({'val': stop_2n, 'name': '초기손절(2N)', 'col': 'red'})
+                # 핵심: 평단가(avg_e)가 아닌 가장 마지막 매수 단가(last_pyramid)를 기준으로 세팅
+                base_price = last_pyramid if last_pyramid else avg_e
+                
+                # 동적 통합 손절가 계산 (마지막 진입가 - 2N)
+                dynamic_stop_2n = base_price - config.get("initial_stop_n", 2.0) * n
+                add_point = base_price + config.get("pyramid_n", 0.5) * n
+                
+                lvls.append({'val': dynamic_stop_2n, 'name': f'{pos["Units"]}차 통합손절(2N)', 'col': 'red'})
                 lvls.append({'val': trail_stop, 'name': f'{config.get("trailing_days", 10)}일신저가(Trailing)', 'col': 'green'})
-                lvls.append({'val': add_point, 'name': '불타기타점', 'col': 'orange'})
+                lvls.append({'val': add_point, 'name': f'{pos["Units"]+1}차 불타기타점', 'col': 'orange'})
 
                 if lt['Close'] < trail_stop:
                     st.error(f"🛑 **[터틀 청산]** {config.get('trailing_days', 10)}일 신저가 이탈 → 전량 매도 권장")
-                elif lt['Close'] < stop_2n:
-                    st.error("🛑 **[위험]** 2N 초기손절선 이탈")
+                elif lt['Close'] < dynamic_stop_2n:
+                    st.error(f"🛑 **[위험]** {pos['Units']}차 통합 손절선(${dynamic_stop_2n:.2f}) 이탈")
                 else:
-                    st.info(f"✅ 추세 탑승 중 (현재 수익률: {profit:.2%})")
+                    st.info(f"✅ {pos['Units']}차 추세 탑승 중 (수익률: {profit:.2%} | 🛡️ 현재 손절선: ${dynamic_stop_2n:.2f})")
 
                 risk_pct = config["risk_pct"] / 100
                 risk_s = int((total_capital * risk_pct) / (n * exchange_rate)) if n > 0 else 1
@@ -608,9 +612,9 @@ with tabs[3]:
                 elif lt['Close'] >= tp1:
                     st.success("📈 **[1차 목표 도달]** MA20 복귀 → 부분 익절 + Stop to Breakeven 권장")
                 elif lt['Close'] < effective_sl:
-                    st.error("🛑 **[손절 조건]** 1.5N 또는 BB Lower 이탈 → 즉시 손절 권장")
+                    st.error(f"🛑 **[손절 조건]** 1.5N 또는 BB Lower 이탈 → 즉시 손절 권장 (${effective_sl:.2f})")
                 else:
-                    st.info(f"✅ 바닥 반등 중 (현재 수익률: {profit:.2%} | 손절: ${effective_sl:.2f})")
+                    st.info(f"✅ 바닥 반등 중 (현재 수익률: {profit:.2%} | 🛡️ 손절선: ${effective_sl:.2f})")
 
                 risk_pct = config["risk_pct"] / 100
                 risk_s = int((total_capital * risk_pct) / (n_val * exchange_rate)) if n_val > 0 else 1
@@ -725,7 +729,6 @@ with tabs[3]:
                 st.rerun()
                 
             if b_d.button("🔙 최근 거래 취소", key=f"bd_{tkr}", use_container_width=True) and len(pos['History']) > 1:
-                # 장부에서도 마지막 거래 삭제 연동
                 for idx in range(len(st.session_state.global_ledger)-1, -1, -1):
                     if st.session_state.global_ledger[idx]['ticker'] == tkr:
                         st.session_state.global_ledger.pop(idx)
@@ -823,7 +826,7 @@ with tabs[5]:
         st.info("뉴스를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.")
 
 # ==========================================
-# 8. [NEW] 누적 매매 일지 탭
+# 8. 누적 매매 일지 탭
 # ==========================================
 with tabs[6]:
     st.subheader("📊 누적 매매 일지 및 계좌 수익률")

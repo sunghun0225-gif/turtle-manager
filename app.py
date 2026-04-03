@@ -31,7 +31,7 @@ def safe_download(ticker_symbol, period="1y", retries=3):
     return None
 
 # ==========================================
-# 2. S&P 500 + 나스닥 100 우량주 유니버스 (잡주 제외)
+# 2. S&P 500 + 나스닥 100 우량주 유니버스 (잡주 제외 540개)
 # ==========================================
 TICKERS = [
     'A', 'AAPL', 'ABBV', 'ABT', 'ACGL', 'ACN', 'ADBE', 'ADI', 'ADM', 'ADP', 'ADSK', 'AEE', 'AEP', 'AES', 'AFL', 'AIG', 'AIZ', 'AJG', 'AKAM', 'ALB', 'ALGN', 'ALL', 'ALLE', 'AMAT', 'AMCR', 'AMD', 'AME', 'AMGN', 'AMP', 'AMT', 'AMZN', 'ANET', 'ANSS', 'AON', 'AOS', 'APA', 'APD', 'APH', 'APTV', 'ARE', 'ATO', 'AVB', 'AVGO', 'AWK', 'AXON', 'AXP', 'AZO', 
@@ -181,7 +181,7 @@ total_capital = int(st.sidebar.number_input("시드머니 (만원)", value=200, 
 exchange_rate = st.sidebar.number_input("현재환율 (₩/$)", value=1450, step=10)
 st.sidebar.info(f"💡 **현재 유니버스:**\nS&P 500, 나스닥 100 등 총 **{len(TICKERS)}개** 종목 무필터 스캔 중.")
 
-# --- 리스크 게이지 복구 완료 ---
+# --- 리스크 게이지 ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("🚦 계좌 리스크 게이지")
 current_units = sum(pos.get('Units', 0) for pos in st.session_state.positions.values())
@@ -194,10 +194,9 @@ elif current_units >= MAX_TOTAL_UNITS * 0.8:
     st.sidebar.warning("⚡ 리스크 한도 임박 (80% 이상)")
 else:
     st.sidebar.success("✅ 리스크 관리 양호")
-
 st.sidebar.markdown("---")
 
-# --- CSV 백업/복구 업로더 복구 완료 ---
+# --- CSV 백업/복구 업로더 ---
 if up_file := st.sidebar.file_uploader("📂 백업 CSV 업로드"):
     if st.sidebar.button("데이터 즉시 복구", type="primary"):
         try:
@@ -280,7 +279,7 @@ for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 
                         st.rerun()
 
 # ==========================================
-# 7. 매니저 탭 (낙폭과대 + 눌림목 공통 3분할 트레일링 스탑)
+# 7. 매니저 탭 (종목별 매수/매도 상세 내역 표시 기능 추가)
 # ==========================================
 with tabs[3]:
     with st.expander("✍️ 수기 등록", expanded=False):
@@ -387,6 +386,16 @@ with tabs[3]:
                 for idx in range(len(st.session_state.global_ledger)-1, -1, -1):
                     if st.session_state.global_ledger[idx]['ticker'] == tkr: st.session_state.global_ledger.pop(idx); break
                 pos['History'].pop(); save_data(st.session_state.positions, st.session_state.global_ledger); st.rerun()
+
+            # --- [추가 완료] 개별 종목 매수/매도 상세 히스토리 내역 표시 ---
+            with st.expander(f"📜 {tkr} 매수/매도 상세 내역", expanded=False):
+                if pos['History']:
+                    hist_df = pd.DataFrame(pos['History'])
+                    # 컬럼명 한글화 및 예쁘게 표시
+                    hist_df.rename(columns={'type': '거래 유형', 'price': '체결 단가($)', 'shares': '체결 수량'}, inplace=True)
+                    st.dataframe(hist_df, use_container_width=True, hide_index=True)
+                else:
+                    st.write("거래 내역이 없습니다.")
 
     if needs_save: save_data(st.session_state.positions, st.session_state.global_ledger)
 

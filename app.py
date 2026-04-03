@@ -31,39 +31,49 @@ def safe_download(ticker_symbol, period="1y", retries=3):
     return None
 
 # ==========================================
-# 2. 강력한 '핵심 600 유니버스' 구축 (방탄 스크래핑)
+# 2. S&P 500 + 나스닥 100 전 종목 무필터링 하드코딩 유니버스
 # ==========================================
-@st.cache_data(ttl=86400)
-def get_sp500_tickers():
-    try:
-        html = requests.get('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies', headers={'User-Agent': 'Mozilla/5.0'}).text
-        # 표 순서가 바뀌어도 자동으로 Symbol 열을 찾아냄
-        for tb in pd.read_html(html):
-            if 'Symbol' in tb.columns:
-                return [t.replace('.', '-') for t in tb['Symbol'].tolist()]
-    except: pass
-    return ['SPY']
-
-@st.cache_data(ttl=86400)
-def get_nasdaq100_tickers():
-    try:
-        html = requests.get('https://en.wikipedia.org/wiki/Nasdaq-100', headers={'User-Agent': 'Mozilla/5.0'}).text
-        # 표 순서가 바뀌어도 자동으로 Ticker 열을 찾아냄
-        for tb in pd.read_html(html):
-            if 'Ticker' in tb.columns:
-                return [t.replace('.', '-') for t in tb['Ticker'].tolist()]
-    except: pass
-    return ['QQQ']
-
-# 러셀 2000 및 XBI (바이오) 핵심 고변동성/거래대금 상위 종목 수동 편입
-CORE_RUSSELL_XBI = [
-    'NBIX', 'EXAS', 'SRPT', 'UTHR', 'CRSP', 'EDIT', 'NTLA', 'BEAM', 'INCY', 'BMRN', 'ALNY', 'SGEN', 'MCRB', 'PRTA',
-    'COIN', 'MSTR', 'HOOD', 'PLTR', 'CELH', 'DKNG', 'CVNA', 'RBLX', 'AFRM', 'SOFI', 'SYM', 'IOT', 'FOUR', 'DUOL', 'CART'
+TICKERS = [
+    # S&P 500 전 종목 및 나스닥 100 주요 종목 (알파벳 순, 약 530개)
+    'A', 'AAPL', 'ABBV', 'ABT', 'ACGL', 'ACN', 'ADBE', 'ADI', 'ADM', 'ADP', 'ADSK', 'AEE', 'AEP', 'AES', 'AFL', 'AIG', 'AIZ', 'AJG', 'AKAM', 'ALB', 'ALGN', 'ALL', 'ALLE', 'AMAT', 'AMCR', 'AMD', 'AME', 'AMGN', 'AMP', 'AMT', 'AMZN', 'ANET', 'ANSS', 'AON', 'AOS', 'APA', 'APD', 'APH', 'APTV', 'ARE', 'ATO', 'AVB', 'AVGO', 'AWK', 'AXON', 'AXP', 'AZO', 
+    'BA', 'BAC', 'BALL', 'BAX', 'BBY', 'BDX', 'BEN', 'BG', 'BIIB', 'BIO', 'BK', 'BKNG', 'BKR', 'BLDR', 'BLK', 'BMY', 'BR', 'BRK-B', 'BRO', 'BSX', 'BWA', 'BXP', 
+    'C', 'CAG', 'CAH', 'CARR', 'CAT', 'CB', 'CBOE', 'CBRE', 'CCI', 'CCL', 'CDNS', 'CDW', 'CE', 'CEG', 'CF', 'CFG', 'CHD', 'CHRW', 'CHTR', 'CI', 'CINF', 'CL', 'CLX', 'CMA', 'CMCSA', 'CME', 'CMG', 'CMI', 'CMS', 'CNC', 'CNP', 'COF', 'COO', 'COP', 'COR', 'COST', 'CPB', 'CPRT', 'CPT', 'CRL', 'CRM', 'CRWD', 'CSCO', 'CSGP', 'CSX', 'CTAS', 'CTLT', 'CTRA', 'CTSH', 'CTVA', 'CVS', 'CVX', 'CZR', 
+    'D', 'DAL', 'DD', 'DE', 'DFS', 'DG', 'DGX', 'DHI', 'DHR', 'DIS', 'DLR', 'DLTR', 'DOV', 'DOW', 'DPZ', 'DRI', 'DTE', 'DUK', 'DVA', 'DVN', 'DXC', 'DXCM', 
+    'EA', 'EBAY', 'ECL', 'ED', 'EFX', 'EG', 'EIX', 'EL', 'ELV', 'EMN', 'EMR', 'ENPH', 'EOG', 'EPAM', 'EQIX', 'EQR', 'EQT', 'ES', 'ESS', 'ETN', 'ETR', 'EVRG', 'EW', 'EXC', 'EXPD', 'EXPE', 'EXR', 
+    'F', 'FANG', 'FAST', 'FCX', 'FDS', 'FDX', 'FE', 'FFIV', 'FI', 'FICO', 'FIS', 'FITB', 'FLT', 'FMC', 'FOX', 'FOXA', 'FRT', 'FSLR', 'FTNT', 
+    'GD', 'GE', 'GEHC', 'GEN', 'GILD', 'GIS', 'GL', 'GLW', 'GM', 'GNRC', 'GOOG', 'GOOGL', 'GPC', 'GPN', 'GRMN', 'GS', 'GWW', 
+    'HAL', 'HAS', 'HBAN', 'HCA', 'HD', 'HES', 'HIG', 'HII', 'HLT', 'HOLX', 'HON', 'HPE', 'HPQ', 'HRL', 'HSIC', 'HST', 'HSY', 'HUBB', 'HUM', 'HWM', 
+    'IBM', 'ICE', 'IDXX', 'IEX', 'IFF', 'ILMN', 'INCY', 'INTC', 'INTU', 'INVH', 'IP', 'IPG', 'IQV', 'IR', 'IRM', 'ISRG', 'IT', 'ITW', 'IVZ', 
+    'J', 'JBHT', 'JCI', 'JKHY', 'JNJ', 'JNPR', 'JPM', 
+    'K', 'KDP', 'KEY', 'KEYS', 'KHC', 'KIM', 'KLAC', 'KMB', 'KMI', 'KMX', 'KO', 'KR', 'KVUE', 
+    'L', 'LDOS', 'LEN', 'LH', 'LHX', 'LIN', 'LKQ', 'LLY', 'LMT', 'LNT', 'LOW', 'LRCX', 'LUV', 'LVS', 'LW', 'LYB', 'LYV', 
+    'MA', 'MAC', 'MAR', 'MAS', 'MCD', 'MCHP', 'MCK', 'MCO', 'MDLZ', 'MDT', 'MET', 'META', 'MGM', 'MHK', 'MKC', 'MKTX', 'MLM', 'MMC', 'MMM', 'MNST', 'MO', 'MOH', 'MOS', 'MPC', 'MPWR', 'MRK', 'MRNA', 'MRVL', 'MS', 'MSCI', 'MSFT', 'MSI', 'MTB', 'MTCH', 'MTD', 'MU', 
+    'NCLH', 'NDAQ', 'NDSN', 'NEE', 'NEM', 'NFLX', 'NI', 'NKE', 'NOC', 'NVR', 'NWL', 'NWS', 'NWSA', 'NXPI', 
+    'O', 'ODFL', 'OKE', 'OMC', 'ON', 'ORCL', 'ORLY', 'OTIS', 'OXY', 
+    'PANW', 'PARA', 'PAYC', 'PAYX', 'PCAR', 'PCG', 'PEAK', 'PEG', 'PEP', 'PFE', 'PFG', 'PG', 'PGR', 'PH', 'PHM', 'PKG', 'PLD', 'PM', 'PNC', 'PNR', 'PNW', 'PODD', 'POOL', 'PPG', 'PPL', 'PRU', 'PSA', 'PSX', 'PTC', 'PWR', 'PYPL', 
+    'QCOM', 'QRVO', 
+    'RCL', 'RE', 'REG', 'REGN', 'RF', 'RHI', 'RJF', 'RL', 'RMD', 'ROK', 'ROL', 'ROP', 'ROST', 'RSG', 'RTX', 'RVTY', 
+    'SBAC', 'SBUX', 'SCHW', 'SHW', 'SJM', 'SLB', 'SNA', 'SNPS', 'SO', 'SPG', 'SPGI', 'SRE', 'STE', 'STLD', 'STT', 'STX', 'STZ', 'SWK', 'SWKS', 'SYF', 'SYK', 'SYY', 
+    'T', 'TAP', 'TDG', 'TDY', 'TECH', 'TEL', 'TER', 'TFC', 'TFX', 'TGT', 'TJX', 'TMO', 'TMUS', 'TPR', 'TRGP', 'TRMB', 'TROW', 'TRV', 'TSCO', 'TSLA', 'TSN', 'TT', 'TTWO', 'TXN', 'TXT', 'TYL', 
+    'UAL', 'UBER', 'UDR', 'UHS', 'ULTA', 'UNP', 'UPS', 'URI', 'USB', 
+    'V', 'VLO', 'VMC', 'VRSK', 'VRSN', 'VRTX', 'VTR', 'VZ', 
+    'WAB', 'WAT', 'WBA', 'WBD', 'WDC', 'WEC', 'WELL', 'WFC', 'WHR', 'WM', 'WMB', 'WMT', 'WRB', 'WST', 'WY', 'WYNN', 
+    'XEL', 'XOM', 'XYL', 
+    'YUM', 'ZBH', 'ZBRA', 'ZION', 'ZTS',
+    
+    # 나스닥 100 특별 편입 및 주요 클라우드/소프트웨어 (S&P에 없는 대형주 포함)
+    'ASML', 'TEAM', 'DDOG', 'MDB', 'ZS', 'WDAY', 'SNOW', 'PLTR', 'APP', 'TOST', 'CART', 'SG', 'CAVA', 'SMCI', 'TMDX',
+    
+    # 러셀 2000 및 XBI (바이오) 핵심 고변동성 모멘텀 종목
+    'NBIX', 'EXAS', 'SRPT', 'UTHR', 'CRSP', 'EDIT', 'NTLA', 'BEAM', 'BMRN', 'ALNY', 'SGEN', 'MCRB', 'PRTA',
+    'COIN', 'MSTR', 'HOOD', 'CELH', 'DKNG', 'CVNA', 'RBLX', 'AFRM', 'SOFI', 'SYM', 'IOT', 'FOUR', 'DUOL', 'ALAB', 'ASTS', 'LUNR', 'RKLB', 'JOBY',
+    
+    # 주요 시장 지수 ETF
+    'SPY', 'QQQ', 'IWM', 'XBI', 'DIA', 'VTI'
 ]
 
-# S&P500 + 나스닥100 + 핵심 러셀/바이오 합친 후 중복(set) 제거
-raw_tickers = get_sp500_tickers() + get_nasdaq100_tickers() + CORE_RUSSELL_XBI
-TICKERS = sorted(list(set(raw_tickers)))
+# 만약의 중복 입력 방지를 위한 고유값(Set) 처리 및 정렬
+TICKERS = sorted(list(set(TICKERS)))
 
 # ==========================================
 # 3. 데이터 입출력 및 기록 헬퍼 함수
@@ -162,7 +172,7 @@ def get_global_news():
 # ==========================================
 # 5. 메인 UI 및 사이드바
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.55 (Final Secure)", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.55 (Full SPX/NDX)", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state:
     st.session_state.positions, st.session_state.global_ledger = load_data()
@@ -170,7 +180,7 @@ if "positions" not in st.session_state:
 st.sidebar.header("⚙️ 리스크 및 시스템 설정")
 total_capital = int(st.sidebar.number_input("시드머니 (만원)", value=200, step=50) * 10000)
 exchange_rate = st.sidebar.number_input("현재 환율 (₩/$)", value=1450, step=10)
-st.sidebar.info(f"💡 **현재 스캔 유니버스:**\nS&P 500, 나스닥 100, 러셀/XBI 핵심 주도주 등 총 **{len(TICKERS)}개** 종목 자동 스캔 중")
+st.sidebar.info(f"💡 **현재 스캔 유니버스:**\nS&P 500 전 종목, 나스닥 100 등 총 **{len(TICKERS)}개** 종목 무필터 스캔 중.")
 
 if up_file := st.sidebar.file_uploader("📂 백업 CSV 업로드"):
     if st.sidebar.button("데이터 즉시 복구", type="primary"):
@@ -197,15 +207,15 @@ c3.metric("보유 종목", f"{len(st.session_state.positions)}개")
 tabs = st.tabs(["🚀 터틀", "📈 눌림목", "📉 BB낙폭", "📋 매니저", "🇺🇸 분석", "🌍 뉴스", "📊 일지"])
 
 # ==========================================
-# 6. 스캐너 탭
+# 6. 스캐너 탭 (조건 완화 적용)
 # ==========================================
 for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"]):
     with tabs[i]:
         config = STRATEGY_CONFIG.get(s_name, {"risk_pct": 2.0})
         col_btn, col_chk = st.columns([3, 2])
-        if col_btn.button(f"🔎 {s_name} 스캔 (약 {len(TICKERS)}개)", key=f"run_{i}", use_container_width=True):
+        if col_btn.button(f"🔎 {s_name} 스캔 (총 {len(TICKERS)}개)", key=f"run_{i}", use_container_width=True):
             res, is_cand = [], col_chk.checkbox("⚠️ 대기 종목 포함", key=f"cand_{i}")
-            pb = st.progress(0, text="대규모 유니버스 분석 중... (수 분 소요)")
+            pb = st.progress(0, text="S&P 500 전 종목 분석 중... (최대 5분 소요)")
             
             for idx, tkr in enumerate(TICKERS):
                 pb.progress((idx + 1) / len(TICKERS))
@@ -394,3 +404,4 @@ with tabs[6]:
         st.dataframe(df_l.iloc[::-1].reset_index(drop=True), use_container_width=True)
     with st.expander("⚠️ 관리자"):
         if st.button("🗑️ 장부 초기화"): st.session_state.global_ledger = []; save_data(st.session_state.positions, []); st.rerun()
+

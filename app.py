@@ -54,19 +54,12 @@ def safe_download(ticker_symbol, period="1y", retries=3):
             time.sleep(1.5 ** attempt) 
     return None
 
-@st.cache_data(ttl=86400)
-def get_sp500_tickers():
-    try:
-        url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        html = requests.get(url, headers=headers, verify=False, timeout=10).text
-        table = pd.read_html(html)[0]
-        tickers = table['Symbol'].tolist()
-        return [ticker.replace('.', '-') for tickers in tickers]
-    except:
-        return ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'BRK-B', 'JNJ', 'JPM']
-
-TICKERS = get_sp500_tickers()
+# [업데이트] S&P 500 크롤링 대신 3대 테마(고모멘텀, 메가트렌드, 레버리지) 유니버스 하드코딩
+TICKERS = [
+    'PLTR', 'CRWD', 'MSTR', 'COIN', 'NVDA', 'AVGO', 'CELH',
+    'LLY', 'NVO', 'VKTX', 'REGN', 'VRTX',
+    'IWM', 'XBI', 'TQQQ', 'SOXL'
+]
 
 # ==========================================
 # 2. 데이터 입출력 (장부 기록 방식 및 단일 CSV 백업 대응)
@@ -89,7 +82,6 @@ def load_data():
             else:
                 history = []
 
-            # 단일 CSV 내 특수 식별자(장부 데이터) 파싱
             if tkr == '_GLOBAL_LEDGER_':
                 global_ledger = history
                 continue
@@ -97,6 +89,8 @@ def load_data():
             for h in history:
                 if 'type' not in h:
                     h['type'] = 'Buy'
+                # 기존 정수 데이터를 안전하게 실수(float)로 변환
+                h['shares'] = float(h.get('shares', 0.0))
 
             lp_level = row.get('last_pyramid_level')
             if pd.isna(lp_level): 
@@ -125,7 +119,6 @@ def save_data(positions, global_ledger):
             'last_pyramid_level': data.get('last_pyramid_level')
         })
         
-    # 글로벌 매매 장부를 동일한 CSV 파일 내 특수 행으로 저장
     rows.append({
         'Ticker': '_GLOBAL_LEDGER_',
         'Units': 0,
@@ -202,14 +195,9 @@ def analyze_ticker(ticker):
         return None
 
 # ==========================================
-# 3-1. 보조 분석 툴 (뉴스 및 SEC)
+# 3-1. 보조 분석 툴 (뉴스 및 SEC) (생략 없이 유지)
 # ==========================================
-FILING_LABELS = {
-    "10-K": "📊 연간보고서", 
-    "10-Q": "📋 분기보고서", 
-    "8-K": "🔔 중요공시", 
-    "4": "👤 내부자거래"
-}
+FILING_LABELS = {"10-K": "📊 연간보고서", "10-Q": "📋 분기보고서", "8-K": "🔔 중요공시", "4": "👤 내부자거래"}
 
 @st.cache_data(ttl=86400)
 def get_cik(ticker: str):
@@ -219,13 +207,11 @@ def get_cik(ticker: str):
         for v in res.values():
             if v["ticker"].upper() == ticker.upper():
                 return str(v["cik_str"]).zfill(10)
-    except: 
-        return None
+    except: return None
 
 def get_sec_filings(ticker: str):
     cik = get_cik(ticker)
-    if not cik: 
-        return []
+    if not cik: return []
     try:
         headers = {"User-Agent": "TurtlePro/1.0"}
         url = f"https://data.sec.gov/submissions/CIK{cik}.json"
@@ -235,14 +221,9 @@ def get_sec_filings(ticker: str):
         for i in range(min(10, len(recent.get("form", [])))):
             form = recent["form"][i]
             label = FILING_LABELS.get(form, f"📄 {form}")
-            filings.append({
-                "form": label, 
-                "date": recent["filingDate"][i], 
-                "url": f"https://www.sec.gov/cgi-bin/browse-edgar?CIK={cik}&action=getcompany"
-            })
+            filings.append({"form": label, "date": recent["filingDate"][i], "url": f"https://www.sec.gov/cgi-bin/browse-edgar?CIK={cik}&action=getcompany"})
         return filings
-    except: 
-        return []
+    except: return []
 
 def get_stock_news(query_name):
     news_list = []
@@ -257,16 +238,10 @@ def get_stock_news(query_name):
                 date_str = dt_kst.strftime("%Y-%m-%d %H:%M (KST)")
             else:
                 date_str = "시간 미상"
-            news_list.append({
-                "title": entry.title, 
-                "link": entry.link, 
-                "date": date_str, 
-                "raw": raw if raw else (0,)*9
-            })
+            news_list.append({"title": entry.title, "link": entry.link, "date": date_str, "raw": raw if raw else (0,)*9})
         news_list.sort(key=lambda x: x['raw'], reverse=True)
         return news_list[:8]
-    except: 
-        return []
+    except: return []
 
 @st.cache_data(ttl=1800)
 def get_global_news():
@@ -280,19 +255,14 @@ def get_global_news():
                 date_str = dt.strftime('%Y-%m-%d %H:%M')
             else:
                 date_str = "시간 미상"
-            result.append({
-                "title": e.title, 
-                "link": e.link, 
-                "date": date_str
-            })
+            result.append({"title": e.title, "link": e.link, "date": date_str})
         return result
-    except: 
-        return []
+    except: return []
 
 # ==========================================
 # 4. 메인 UI 및 사이드바
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.55", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.55 (Fractional)", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state or "global_ledger" not in st.session_state:
     pos_data, ledger_data = load_data()
@@ -304,7 +274,7 @@ cap_manwon = st.sidebar.number_input("시드머니 (만원)", value=200, step=50
 total_capital = int(cap_manwon * 10000)
 exchange_rate = st.sidebar.number_input("현재 환율 (₩/$)", value=1450, step=10)
 
-st.sidebar.info("💡 **위험 감수율(%) 안내:**\n종목 스캔 시 **전략별 최적화된 리스크**(터틀 1.5%, 눌림목 2.0%, 낙폭 2.0%)가 자동 적용됩니다.")
+st.sidebar.info("💡 **소수점 매매 적용됨:**\n주당 단가에 상관없이 자본금 대비 정확한 % 리스크만큼 매수 수량(소수점 4자리)이 계산됩니다.")
 
 st.sidebar.divider()
 up_file = st.sidebar.file_uploader("📂 백업 CSV 업로드")
@@ -330,6 +300,7 @@ if up_file and st.sidebar.button("데이터 즉시 복구", type="primary"):
                 
             for h in history:
                 if 'type' not in h: h['type'] = 'Buy'
+                h['shares'] = float(h.get('shares', 0.0))
             
             lp_level = row.get('last_pyramid_level')
             if pd.isna(lp_level): lp_level = None
@@ -372,7 +343,7 @@ st.divider()
 tabs = st.tabs(["🚀 터틀", "📈 눌림목", "📉 BB낙폭", "📋 포지션 매니저", "🇺🇸 정밀 분석", "🌍 마켓 뉴스", "📊 누적 매매 일지"])
 
 # ==========================================
-# 5. 스캐너 탭
+# 5. 스캐너 탭 (소수점 계산 적용)
 # ==========================================
 strategies = ["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"]
 
@@ -385,7 +356,7 @@ for i, s_name in enumerate(strategies):
 
         if is_run:
             res = []
-            pb = st.progress(0, text="S&P 500 전 종목 분석 중...")
+            pb = st.progress(0, text="유니버스 전 종목 분석 중...")
             
             for idx, tkr in enumerate(TICKERS):
                 pb.progress((idx + 1) / len(TICKERS))
@@ -417,7 +388,8 @@ for i, s_name in enumerate(strategies):
 
                     if cond or cand:
                         risk_pct = config["risk_pct"] / 100
-                        sh = int((total_capital * risk_pct) / (lt['N'] * exchange_rate)) if lt['N'] > 0 else 1
+                        # [업데이트] int 형변환을 제거하고 round로 소수점 4자리까지 허용
+                        sh = round((total_capital * risk_pct) / (lt['N'] * exchange_rate), 4) if lt['N'] > 0 else 0.0
                         res.append({"tkr": tkr, "p": lt['Close'], "sh": sh, "is_cand": cand, "n": lt['N']})
                         
             pb.empty()
@@ -430,13 +402,14 @@ for i, s_name in enumerate(strategies):
                     l_col, r_col = st.columns([3, 1])
                     tag = " [⚠️ 대기]" if r['is_cand'] else " [✅ 포착]"
                     l_col.write(f"### {r['tkr']}{tag}")
-                    l_col.write(f"현재가: ${r['p']:.2f} | 권장 매수량: {r['sh']}주 | N(ATR): ${r['n']:.2f}")
+                    # 수량을 소수점 4자리로 출력
+                    l_col.write(f"현재가: ${r['p']:.2f} | 권장 매수량: {r['sh']:.4f}주 | N(ATR): ${r['n']:.2f}")
 
                     if not r['is_cand'] and r_col.button("➕ 등록", key=f"reg_{r['tkr']}_{i}"):
                         st.session_state.positions[r['tkr']] = {
                             'Units': 1, 
                             'Highest': r['p'], 
-                            'History': [{'type': 'Buy', 'price': r['p'], 'shares': r['sh']}], 
+                            'History': [{'type': 'Buy', 'price': r['p'], 'shares': float(r['sh'])}], 
                             'Strategy': s_name, 
                             'last_pyramid_level': r['p']
                         }
@@ -446,14 +419,14 @@ for i, s_name in enumerate(strategies):
                             'ticker': r['tkr'],
                             'type': 'Buy',
                             'price': float(r['p']),
-                            'shares': int(r['sh']),
+                            'shares': float(r['sh']),
                             'realized_profit': 0.0
                         })
                         save_data(st.session_state.positions, st.session_state.global_ledger)
                         st.rerun()
 
 # ==========================================
-# 6. 매니저 탭 (매매 장부 연동 로직 적용)
+# 6. 매니저 탭 (소수점 입력 대응)
 # ==========================================
 with tabs[3]:
     with st.expander("✍️ 보유 종목 수기 등록", expanded=False):
@@ -461,14 +434,15 @@ with tabs[3]:
         m_t = mc1.text_input("티커").upper()
         m_s = mc2.selectbox("적용 전략", ["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"])
         m_p = mc3.number_input("초기 진입단가", value=0.0)
-        m_h = mc4.number_input("매수 수량(주)", value=1)
+        # [업데이트] 매수 수량을 소수점으로 입력받을 수 있도록 수정
+        m_h = mc4.number_input("매수 수량(주)", value=1.0, min_value=0.0001, step=0.1, format="%.4f")
 
         if st.button("➕ 포지션 직접 등록", use_container_width=True):
             if m_t:
                 st.session_state.positions[m_t] = {
                     'Units': 1, 
                     'Highest': m_p,
-                    'History': [{'type': 'Buy', 'price': m_p, 'shares': m_h}],
+                    'History': [{'type': 'Buy', 'price': m_p, 'shares': float(m_h)}],
                     'Strategy': m_s, 
                     'last_pyramid_level': m_p
                 }
@@ -478,7 +452,7 @@ with tabs[3]:
                     'ticker': m_t,
                     'type': 'Buy',
                     'price': float(m_p),
-                    'shares': int(m_h),
+                    'shares': float(m_h),
                     'realized_profit': 0.0
                 })
                 save_data(st.session_state.positions, st.session_state.global_ledger)
@@ -495,25 +469,27 @@ with tabs[3]:
         config = STRATEGY_CONFIG.get(st_n, {"risk_pct": DEFAULT_RISK_PCT, "max_unit_per_stock": 2})
         max_units = config.get("max_unit_per_stock", 2)
         
-        # 내부 계산용 변수
-        total_s = 0
+        total_s = 0.0
         avg_e = 0.0
         active_lots = []
         
         for h in pos['History']:
             h_type = h.get('type', 'Buy')
+            # 안정적인 계산을 위해 float 보장
+            h_shares = float(h['shares']) 
+            
             if h_type == 'Buy':
-                new_total = total_s + h['shares']
-                avg_e = (avg_e * total_s + h['price'] * h['shares']) / new_total if new_total > 0 else 0
+                new_total = total_s + h_shares
+                avg_e = (avg_e * total_s + h['price'] * h_shares) / new_total if new_total > 0 else 0
                 total_s = new_total
-                active_lots.append({'price': h['price'], 'shares': h['shares']})
+                active_lots.append({'price': h['price'], 'shares': h_shares})
             elif h_type == 'Sell':
-                total_s -= h['shares']
-                if total_s <= 0:
-                    total_s = 0
+                total_s -= h_shares
+                if total_s <= 0.0001:  # 소수점 오차 방지
+                    total_s = 0.0
                     avg_e = 0.0
-                rem_sell = h['shares']
-                while rem_sell > 0 and active_lots:
+                rem_sell = h_shares
+                while rem_sell > 0.0001 and active_lots:
                     if active_lots[-1]['shares'] > rem_sell:
                         active_lots[-1]['shares'] -= rem_sell
                         rem_sell = 0
@@ -536,7 +512,7 @@ with tabs[3]:
         with st.container(border=True):
             h1, h2 = st.columns([4, 1])
             s_color = "blue" if "터틀" in st_n else ("green" if "눌림목" in st_n else "red")
-            h1.markdown(f"#### {tkr} :{s_color}[({st_n})] - 잔여 {total_s}주")
+            h1.markdown(f"#### {tkr} :{s_color}[({st_n})] - 잔여 {total_s:.4f}주")
             
             if h2.button("전량 매매 종료", key=f"ex_{tkr}"):
                 realized_profit = (lt['Close'] - avg_e) * total_s
@@ -553,25 +529,19 @@ with tabs[3]:
                 st.rerun()
 
             lvls = [{'val': avg_e, 'name': '전체 평단가', 'col': 'gray'}]
-            add_shares_info = -1
+            add_shares_info = -1.0
             add_point = 0.0
             bb_add_point = 0.0
             strong_oversold = False
             tp1 = 0.0
             effective_sl = 0.0
 
-            # ==========================================
-            # 터틀 전략: 차수별 유동적 손절가 적용
-            # ==========================================
             if "터틀" in st_n:
                 n = lt['N']
                 trail_stop = lt[f'Low{config.get("trailing_days", 10)}']
                 last_pyramid = pos.get('last_pyramid_level')
                 
-                # 핵심: 평단가(avg_e)가 아닌 가장 마지막 매수 단가(last_pyramid)를 기준으로 세팅
                 base_price = last_pyramid if last_pyramid else avg_e
-                
-                # 동적 통합 손절가 계산 (마지막 진입가 - 2N)
                 dynamic_stop_2n = base_price - config.get("initial_stop_n", 2.0) * n
                 add_point = base_price + config.get("pyramid_n", 0.5) * n
                 
@@ -587,11 +557,10 @@ with tabs[3]:
                     st.info(f"✅ {pos['Units']}차 추세 탑승 중 (수익률: {profit:.2%} | 🛡️ 현재 손절선: ${dynamic_stop_2n:.2f})")
 
                 risk_pct = config["risk_pct"] / 100
-                risk_s = int((total_capital * risk_pct) / (n * exchange_rate)) if n > 0 else 1
-                cash_s = int((total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate))
-                add_shares_info = max(1, min(risk_s, cash_s))
+                risk_s = round((total_capital * risk_pct) / (n * exchange_rate), 4) if n > 0 else 0.0
+                cash_s = round((total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate), 4)
+                add_shares_info = max(0.0001, min(risk_s, cash_s))
 
-            # --- BB-낙폭과대 전략 ---
             elif "BB" in st_n or "낙폭" in st_n:
                 n_val = lt['N']
                 tp1 = lt['MA20']
@@ -617,11 +586,10 @@ with tabs[3]:
                     st.info(f"✅ 바닥 반등 중 (현재 수익률: {profit:.2%} | 🛡️ 손절선: ${effective_sl:.2f})")
 
                 risk_pct = config["risk_pct"] / 100
-                risk_s = int((total_capital * risk_pct) / (n_val * exchange_rate)) if n_val > 0 else 1
-                cash_s = int((total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate))
-                add_shares_info = max(1, min(risk_s, cash_s))
+                risk_s = round((total_capital * risk_pct) / (n_val * exchange_rate), 4) if n_val > 0 else 0.0
+                cash_s = round((total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate), 4)
+                add_shares_info = max(0.0001, min(risk_s, cash_s))
 
-            # --- 20일 눌림목 전략 ---
             else: 
                 tp = avg_e * 1.06
                 sl = avg_e * 0.96
@@ -637,7 +605,6 @@ with tabs[3]:
 
             lvls.append({'val': lt['Close'], 'name': '현재가', 'col': 'purple'})
 
-            # --- 차트 그리기 ---
             c_df = df.reset_index()[['Date', 'Close']].tail(60)
             base = alt.Chart(c_df).encode(x=alt.X('Date:T', title=None))
             line = base.mark_line(color='#1f77b4').encode(y=alt.Y('Close:Q', scale=alt.Scale(zero=False)))
@@ -658,45 +625,44 @@ with tabs[3]:
             
             st.altair_chart(alt.layer(line, *rules).properties(height=320), use_container_width=True)
 
-            # --- 전략별 추가 매수 안내 ---
-            if "터틀" in st_n and add_shares_info >= 0:
+            if "터틀" in st_n and add_shares_info >= 0.0001:
                 if pos['Units'] < max_units:
                     if not pd.isna(add_point):
                         if lt['Close'] >= add_point: 
-                            st.warning(f"🔔 **[추가 매수 알람]** 불타기 타점(${add_point:.2f}) 돌파! **{add_shares_info}주** 추가 진입 검토")
+                            st.warning(f"🔔 **[추가 매수 알람]** 불타기 타점(${add_point:.2f}) 돌파! **{add_shares_info:.4f}주** 추가 진입 검토")
                         else: 
-                            st.info(f"💡 **불타기 대기:** ${add_point:.2f} 도달 시 **{add_shares_info}주** 추가 매수 권장 (현재 {pos['Units']}/{max_units}U)")
+                            st.info(f"💡 **불타기 대기:** ${add_point:.2f} 도달 시 **{add_shares_info:.4f}주** 추가 매수 권장 (현재 {pos['Units']}/{max_units}U)")
                     else:
                         st.error("⚠️ 불타기 가격을 계산할 수 없습니다.")
                 else: 
                     st.write(f"✅ **유닛 풀(Full) 탑승:** 최대 허용 유닛({max_units}U) 보유 중")
             
-            elif ("BB" in st_n or "낙폭" in st_n) and add_shares_info >= 0:
+            elif ("BB" in st_n or "낙폭" in st_n) and add_shares_info >= 0.0001:
                 if pos['Units'] < max_units:
                     if lt['Close'] >= tp1 and lt['Close'] <= bb_add_point and 35 <= lt['RSI'] <= 45: 
-                        st.warning(f"📌 **[BB 2차 진입 기회]** MA20 -0.5σ 재진입! **{add_shares_info}주** 추가 매수 검토 (현재 {pos['Units']}/{max_units}U)")
+                        st.warning(f"📌 **[BB 2차 진입 기회]** MA20 -0.5σ 재진입! **{add_shares_info:.4f}주** 추가 매수 검토 (현재 {pos['Units']}/{max_units}U)")
                     elif lt['Close'] <= lt['BB_Lower'] * 1.02 and strong_oversold and lt['Close'] > effective_sl: 
-                        st.warning(f"⚠️ **[강한 Oversold]** BB 하단 부근 + RSI {lt['RSI']:.1f} → **{add_shares_info}주** 저가 평균화 기회 (현재 {pos['Units']}/{max_units}U)")
+                        st.warning(f"⚠️ **[강한 Oversold]** BB 하단 부근 + RSI {lt['RSI']:.1f} → **{add_shares_info:.4f}주** 저가 평균화 기회 (현재 {pos['Units']}/{max_units}U)")
                     else:
                         st.info(f"💡 **대기 중:** 안전한 추가 매수 타점을 기다립니다. (현재 {pos['Units']}/{max_units}U)")
                 else: 
                     st.write(f"✅ **유닛 풀(Full) 탑승:** 최대 허용 유닛({max_units}U) 보유 중")
 
-            # --- 장부형 매수/부분매도 통합 입력 UI ---
+            # [업데이트] 부분 매수/매도 시 소수점 입력창 지원
             c_p, c_s = st.columns(2)
             u_p = c_p.number_input("거래 단가 ($)", value=float(lt['Close']), key=f"up_{tkr}")
-            u_s = c_s.number_input("거래 수량 (주)", value=1, min_value=1, key=f"us_{tkr}")
+            u_s = c_s.number_input("거래 수량 (주)", value=1.0, min_value=0.0001, step=0.1, format="%.4f", key=f"us_{tkr}")
             
             b_a, b_s, b_d = st.columns(3)
             
             if b_a.button("➕ 추가 매수", key=f"ba_{tkr}", use_container_width=True):
-                pos['History'].append({'type': 'Buy', 'price': u_p, 'shares': u_s})
+                pos['History'].append({'type': 'Buy', 'price': float(u_p), 'shares': float(u_s)})
                 st.session_state.global_ledger.append({
                     'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'ticker': tkr,
                     'type': 'Buy',
                     'price': float(u_p),
-                    'shares': u_s,
+                    'shares': float(u_s),
                     'realized_profit': 0.0
                 })
                 save_data(st.session_state.positions, st.session_state.global_ledger)
@@ -716,13 +682,13 @@ with tabs[3]:
                     del st.session_state.positions[tkr]
                 else:
                     realized_profit = (u_p - avg_e) * u_s
-                    pos['History'].append({'type': 'Sell', 'price': u_p, 'shares': u_s})
+                    pos['History'].append({'type': 'Sell', 'price': float(u_p), 'shares': float(u_s)})
                     st.session_state.global_ledger.append({
                         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         'ticker': tkr,
                         'type': 'Sell (Partial)',
                         'price': float(u_p),
-                        'shares': u_s,
+                        'shares': float(u_s),
                         'realized_profit': float(realized_profit)
                     })
                 save_data(st.session_state.positions, st.session_state.global_ledger)
@@ -744,11 +710,11 @@ with tabs[3]:
             display_df = pd.DataFrame({
                 '구분': df_hist['type'].map({'Buy': '🔴 매수', 'Sell': '🔵 매도'}),
                 '단가': df_hist['price'].apply(lambda x: f"${x:.2f}"),
-                '수량': df_hist['shares'].astype(str) + "주"
+                # 수량 포맷 변경
+                '수량': df_hist['shares'].apply(lambda x: f"{float(x):.4f}주") 
             })
             st.table(display_df)
 
-# --- 백업 다운로드 버튼 (장부 통합) ---
     if st.session_state.positions or st.session_state.global_ledger:
         rows_to_export = []
         for k, v in st.session_state.positions.items():
@@ -846,13 +812,12 @@ with tabs[6]:
         df_ledger = pd.DataFrame(st.session_state.global_ledger)
         df_ledger.columns = ['일시', '티커', '구분', '단가($)', '수량(주)', '실현손익($)']
         
-        # 포매팅 적용
-        df_ledger['단가($)'] = df_ledger['단가($)'].apply(lambda x: f"${x:.2f}")
-        df_ledger['실현손익($)'] = df_ledger['실현손익($)'].apply(lambda x: f"${x:.2f}" if x != 0 else "-")
+        df_ledger['단가($)'] = df_ledger['단가($)'].apply(lambda x: f"${float(x):.2f}")
+        # 장부에도 소수점 수량 표기
+        df_ledger['수량(주)'] = df_ledger['수량(주)'].apply(lambda x: f"{float(x):.4f}")
+        df_ledger['실현손익($)'] = df_ledger['실현손익($)'].apply(lambda x: f"${float(x):.2f}" if x != 0 else "-")
         
-        # 최신 거래가 위로 오도록 정렬
         df_ledger = df_ledger.iloc[::-1].reset_index(drop=True)
-        
         st.dataframe(df_ledger, use_container_width=True)
     else:
         st.info("아직 시스템에 기록된 누적 매매 내역이 없습니다.")

@@ -5,6 +5,8 @@ import numpy as np
 import os, time, requests, json, feedparser, urllib.parse
 import altair as alt
 from datetime import datetime, timedelta
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 import locale
@@ -34,9 +36,6 @@ strategy_desc = {
     "📉 BB-낙폭과대": "볼린저 밴드 하단 및 단기 이격도 과다로 인해 V자 반등이 기대되는 종목입니다. (낙폭과대)"
 }
 
-# ==========================================
-# 2. S&P 500 + 나스닥 100 우량주 유니버스 (540개)
-# ==========================================
 TICKERS = [
     'A', 'AAPL', 'ABBV', 'ABT', 'ACGL', 'ACN', 'ADBE', 'ADI', 'ADM', 'ADP', 'ADSK', 'AEE', 'AEP', 'AES', 'AFL', 'AIG', 'AIZ', 'AJG', 'AKAM', 'ALB', 'ALGN', 'ALL', 'ALLE', 'AMAT', 'AMCR', 'AMD', 'AME', 'AMGN', 'AMP', 'AMT', 'AMZN', 'ANET', 'ANSS', 'AON', 'AOS', 'APA', 'APD', 'APH', 'APTV', 'ARE', 'ATO', 'AVB', 'AVGO', 'AWK', 'AXON', 'AXP', 'AZO', 
     'BA', 'BAC', 'BALL', 'BAX', 'BBY', 'BDX', 'BEN', 'BG', 'BIIB', 'BIO', 'BK', 'BKNG', 'BKR', 'BLDR', 'BLK', 'BMY', 'BR', 'BRK-B', 'BRO', 'BSX', 'BWA', 'BXP', 
@@ -69,7 +68,7 @@ TICKERS = [
 TICKERS = sorted(list(set(TICKERS)))
 
 # ==========================================
-# 3. [핵심] Rate Limit 방지용 Batch Download + 직전 거래일
+# 3. [핵심수정] 완벽한 Bulk Download (Cache 보완)
 # ==========================================
 def get_last_trading_date():
     today = pd.Timestamp.now(tz='America/New_York').normalize()
@@ -85,43 +84,38 @@ def get_last_trading_date():
             return last_trading
         last_trading -= timedelta(days=1)
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=1800, show_spinner=False)
 def bulk_download_all():
-    """한 번에 80개 종목씩 묶어서 다운로드하여 Rate Limit 완벽 회피"""
-    chunks = [TICKERS[i:i+80] for i in range(0, len(TICKERS), 80)]
+    # 야후 서버 차단을 완벽히 피하기 위해 청크(묶음) 크기를 50개로 축소
+    chunks = [TICKERS[i:i+50] for i in range(0, len(TICKERS), 50)]
     all_data = {}
     
-    pb = st.progress(0, text="📥 대규모 데이터 병렬 다운로드 중... (Rate Limit 우회)")
+    pb = st.progress(0, text="📥 야후 파이낸스 데이터 수집 중... (약 30초~1분 소요)")
     
     for idx, chunk in enumerate(chunks):
         try:
-            # chunk를 통째로 다운로드 (내부적으로 멀티스레딩 동작)
-            data = yf.download(chunk, period="1y", progress=False, timeout=25, threads=True, repair=True)
+            # group_by='ticker' 설정 추가: 데이터 구조 꼬임 원천 방지
+            data = yf.download(chunk, period="1y", progress=False, timeout=25, threads=True, repair=True, group_by='ticker')
             
-            # 멀티 인덱스 분리
             if isinstance(data.columns, pd.MultiIndex):
                 for ticker in chunk:
-                    try:
-                        df = data.xs(ticker, level=1, axis=1)
+                    if ticker in data.columns.levels[0]:
+                        df = data[ticker].dropna(how='all')
                         if len(df) > 100:
                             all_data[ticker] = df
-                    except:
-                        continue
             else:
-                # 1개 티커만 있는 chunk일 경우 (예: 마지막 자투리)
                 for ticker in chunk:
-                    if ticker in data.columns:
-                        all_data[ticker] = data
+                    if ticker in data.columns or len(chunk) == 1:
+                        all_data[ticker] = data.dropna(how='all')
         except Exception as e:
-            print(f"Chunk {idx} 다운로드 실패: {str(e)[:80]}")
-        
+            print(f"Chunk {idx} 다운로드 오류: {str(e)[:50]}")
+            
         pb.progress((idx+1)/len(chunks))
-        time.sleep(1.0) # 야후 서버에 쉴 틈을 줌 (가장 중요)
-    
+        time.sleep(1.5)  # 접속 차단을 피하는 가장 중요한 휴식 시간
+        
     pb.empty()
     return all_data
 
-# 단일 종목 분석 (매니저 탭, 분석 탭 등에서 사용)
 def safe_download(ticker_symbol, period="1y", retries=3):
     for attempt in range(retries):
         try:
@@ -130,9 +124,7 @@ def safe_download(ticker_symbol, period="1y", retries=3):
                 if not isinstance(df.index, pd.DatetimeIndex):
                     df.index = pd.to_datetime(df.index)
                 return df
-        except Exception as e:
-            if attempt == retries - 1:
-                print(f"⚠️ {ticker_symbol} 데이터 로드 실패 (시도 {retries}회): {str(e)[:80]}")
+        except Exception:
             time.sleep(1.5 ** attempt)
     return None
 
@@ -181,7 +173,7 @@ def log_trade(tkr, trade_type, price, shares, profit=0.0):
 # ==========================================
 # 5. 분석 엔진 (공통)
 # ==========================================
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner=False)
 def check_market_filter():
     try:
         spy = safe_download("SPY", period="1y") 
@@ -196,11 +188,9 @@ def check_market_filter():
         
         return (curr_spy > ma200_now) and is_trending_up, curr_spy, ma200_now, is_trending_up, last_date_str
     except Exception as e:
-        print(f"시장 필터 계산 중 오류: {str(e)[:80]}")
         return True, 0, 0, False, "알 수 없음"
 
 def compute_indicators(df):
-    """분석 로직을 분리하여 bulk와 개별 다운로드 양쪽에서 재사용"""
     df['prev_close'] = df['Close'].shift(1)
     df['TR'] = df.apply(lambda x: max(x['High']-x['Low'], 
                                       abs(x['High']-x['prev_close']) if pd.notna(x['prev_close']) else 0, 
@@ -236,17 +226,17 @@ def analyze_ticker_from_bulk(ticker, all_data):
         df.columns = df.columns.get_level_values(0)
     return compute_indicators(df)
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=1800, show_spinner=False)
 def analyze_ticker(ticker):
     df = safe_download(ticker)
     if df is None or len(df) < 200: return None
     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
     return compute_indicators(df)
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_sec_filings(ticker: str):
     try:
-        headers = {"User-Agent": "TurtlePro/1.0 (contact: your@email.com)"}
+        headers = {"User-Agent": "TurtlePro/1.0"}
         cik = next((str(v["cik_str"]).zfill(10) for v in requests.get(
             "https://www.sec.gov/files/company_tickers.json", 
             headers=headers, timeout=10).json().values() 
@@ -269,7 +259,7 @@ def get_stock_news(query_name):
     except Exception:
         return []
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=1800, show_spinner=False)
 def get_global_news():
     try:
         return [{"title": e.title, "link": e.link, "date": (datetime(*e.published_parsed[:6]) + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M') if e.get("published_parsed") else "미상"} 
@@ -336,12 +326,19 @@ def evaluate_turtle_position(df, pos, config, lt, total_capital, exchange_rate, 
 # ==========================================
 # 7. 메인 UI 
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.58 (Master Bulk)", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.59 (Stable)", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state:
     st.session_state.positions, st.session_state.global_ledger = load_data()
 
 st.sidebar.header("⚙️ 리스크 및 시스템 설정")
+
+# --- 캐시 초기화 버튼 (문제 해결의 핵심!) ---
+if st.sidebar.button("♻️ 데이터 캐시 강제 초기화 (오류 해결)", type="primary"):
+    st.cache_data.clear()
+    st.sidebar.success("✅ 캐시가 모두 삭제되었습니다. 스캔을 다시 실행해주세요!")
+st.sidebar.markdown("---")
+
 total_capital = int(st.sidebar.number_input("시드머니 (만원)", value=200, step=50) * 10000)
 exchange_rate = st.sidebar.number_input("현재환율 (₩/$)", value=1450, step=10)
 st.sidebar.info(f"💡 **현재 유니버스:**\nS&P 500, 나스닥 100 등 총 **{len(TICKERS)}개** 종목 무필터 스캔 중.")
@@ -377,10 +374,10 @@ if up_file := st.sidebar.file_uploader("📂 백업 CSV 업로드"):
         except Exception as e: 
             st.sidebar.error(f"❌ 오류: {e}")
 
-st.title("🐢 Turtle System Pro V7.58")
+st.title("🐢 Turtle System Pro V7.59")
 
 is_bull, spy_val, ma200_val, is_trending, last_date = check_market_filter()
-st.caption(f"📅 **데이터 기준일:** {last_date} (직전 거래일 자동 반영 / Rate Limit 우회 모드)")
+st.caption(f"📅 **데이터 기준일:** {last_date}")
 
 if is_bull: 
     st.success(f"🟢 시장 통과 | SPY: ${spy_val:.2f} / MA200: ${ma200_val:.2f} | {'📈 상승 추세' if is_trending else '➡️ 횡보'}")
@@ -404,7 +401,7 @@ with st.expander("💡 현재 시장 상황 맞춤 트레이딩 가이드", expa
 tabs = st.tabs(["🚀 터틀", "📈 눌림목", "📉 BB낙폭", "📋 매니저", "🇺🇸 분석", "🌍 뉴스", "📊 일지"])
 
 # ==========================================
-# 8. 스캐너 탭 (완벽한 Bulk 처리)
+# 8. 스캐너 탭 (오류 방지 및 데이터 현황 출력)
 # ==========================================
 for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"]):
     with tabs[i]:
@@ -413,12 +410,17 @@ for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 
         
         if st.button(f"🔎 {s_name} 스캔 (총 {len(TICKERS)}개)", key=f"run_{i}", use_container_width=True):
             res = []
-            # 1. 한 번에 모든 데이터 다운로드
             all_data = bulk_download_all()
             
-            pb = st.progress(0, text="✅ 데이터 다운로드 완료, 종목 분석 진행 중...")
+            # --- 데이터 수집 현황 표시 (디버깅용) ---
+            if len(all_data) == 0:
+                st.error("🚨 야후 파이낸스에서 데이터를 하나도 불러오지 못했습니다! 사이드바의 **[데이터 캐시 강제 초기화]** 버튼을 누른 후 다시 시도해주세요.")
+                st.stop()
+            else:
+                st.success(f"📊 정상 수집된 종목: **{len(all_data)}개** (전체 {len(TICKERS)}개 중)")
             
-            # 2. 로컬에서 데이터 분석 (API 통신 없음 -> 엄청나게 빠름)
+            pb = st.progress(0, text="종목 분석 진행 중...")
+            
             for idx, tkr in enumerate(TICKERS):
                 pb.progress((idx + 1) / len(TICKERS))
                 df = analyze_ticker_from_bulk(tkr, all_data)
@@ -444,9 +446,9 @@ for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 
             pb.empty()
             
             if not res:
-                st.warning("📢 현재 조건을 만족하는 매수 타점 종목이 없습니다. (현금 관망)")
+                st.warning("📢 현재 조건을 만족하는 매수 타점 종목이 없습니다. (현금 관망을 추천합니다)")
             else:
-                st.success(f"🎯 총 {len(res)}개 종목 포착!")
+                st.info(f"🎯 총 {len(res)}개 종목 포착!")
 
             for r in res:
                 with st.container(border=True):
@@ -481,7 +483,6 @@ with tabs[3]:
             st.rerun()
 
     for tkr, pos in list(st.session_state.positions.items()):
-        # 매니저는 개별 조회 사용 (부하 적음)
         df = analyze_ticker(tkr)
         if df is None: continue
         st_n = pos['Strategy']

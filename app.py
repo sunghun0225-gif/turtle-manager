@@ -8,15 +8,27 @@ from datetime import datetime, timedelta
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import ssl
-ssl._create_default_https_context = ssl._create_unverified_context
+import urllib3
 import locale
 import pandas.tseries.offsets as offsets
+
+# ==========================================
+# [핵심] SSL 보안 경고 무시 및 야후 파이낸스 차단 우회 세션
+# ==========================================
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+ssl._create_default_https_context = ssl._create_unverified_context
 
 # 시스템에 따라 한글 요일이 깨질 수 있으므로 예외 처리
 try:
     locale.setlocale(locale.LC_TIME, 'ko_KR.UTF-8')
 except:
     pass
+
+yf_session = requests.Session()
+yf_session.verify = False  # SSL 인증서 강제 패스 (강력한 우회)
+yf_session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+})
 
 # ==========================================
 # 1. 설정 및 리스크 파라미터 
@@ -68,7 +80,7 @@ TICKERS = [
 TICKERS = sorted(list(set(TICKERS)))
 
 # ==========================================
-# 3. [핵심수정] 완벽한 Bulk Download (Cache 보완)
+# 2. 데이터 다운로드 로직 분리 (우회 세션 적용)
 # ==========================================
 def get_last_trading_date():
     today = pd.Timestamp.now(tz='America/New_York').normalize()
@@ -79,29 +91,43 @@ def get_last_trading_date():
     
     while True:
         test_date = last_trading.strftime('%Y-%m-%d')
-        df_test = yf.download("SPY", start=test_date, end=test_date, progress=False, timeout=10)
+        df_test = yf.download("SPY", start=test_date, end=test_date, progress=False, timeout=10, session=yf_session)
         if len(df_test) > 0:
             return last_trading
         last_trading -= timedelta(days=1)
 
+def safe_download_single(ticker_symbol, period="1y", retries=3):
+    """분석 탭 & SPY 기준일 추출 전용 (history 함수 + 우회 세션 사용)"""
+    for attempt in range(retries):
+        try:
+            tkr = yf.Ticker(ticker_symbol, session=yf_session)
+            df = tkr.history(period=period)
+            if len(df) > 20:
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    df.index = pd.to_datetime(df.index)
+                if df.index.tz is not None:
+                    df.index = df.index.tz_localize(None)
+                return df
+        except Exception:
+            pass
+        time.sleep(1.5 ** attempt)
+    return None
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def bulk_download_all():
-    # 야후 서버 차단을 완벽히 피하기 위해 청크(묶음) 크기를 50개로 축소
+    """스캐너 전용 (대량 다운로드 + 우회 세션 적용)"""
     chunks = [TICKERS[i:i+50] for i in range(0, len(TICKERS), 50)]
     all_data = {}
-    
-    pb = st.progress(0, text="📥 야후 파이낸스 데이터 수집 중... (약 30초~1분 소요)")
+    pb = st.progress(0, text="📥 야후 파이낸스 대량 데이터 수집 중... (우회망 작동 중)")
     
     for idx, chunk in enumerate(chunks):
         try:
-            # group_by='ticker' 설정 추가: 데이터 구조 꼬임 원천 방지
-            data = yf.download(chunk, period="1y", progress=False, timeout=25, threads=True, repair=True, group_by='ticker')
-            
+            data = yf.download(chunk, period="1y", progress=False, timeout=25, threads=True, repair=True, group_by='ticker', session=yf_session)
             if isinstance(data.columns, pd.MultiIndex):
                 for ticker in chunk:
                     if ticker in data.columns.levels[0]:
                         df = data[ticker].dropna(how='all')
-                        if len(df) > 100:
+                        if len(df) > 20:
                             all_data[ticker] = df
             else:
                 for ticker in chunk:
@@ -111,25 +137,13 @@ def bulk_download_all():
             print(f"Chunk {idx} 다운로드 오류: {str(e)[:50]}")
             
         pb.progress((idx+1)/len(chunks))
-        time.sleep(1.5)  # 접속 차단을 피하는 가장 중요한 휴식 시간
+        time.sleep(1.5) 
         
     pb.empty()
     return all_data
 
-def safe_download(ticker_symbol, period="1y", retries=3):
-    for attempt in range(retries):
-        try:
-            df = yf.download(ticker_symbol, period=period, progress=False, timeout=20, threads=True, repair=True)
-            if len(df) > 100:
-                if not isinstance(df.index, pd.DatetimeIndex):
-                    df.index = pd.to_datetime(df.index)
-                return df
-        except Exception:
-            time.sleep(1.5 ** attempt)
-    return None
-
 # ==========================================
-# 4. 데이터 기록 함수
+# 3. 데이터 기록 함수
 # ==========================================
 def load_data():
     positions, global_ledger = {}, []
@@ -171,14 +185,14 @@ def log_trade(tkr, trade_type, price, shares, profit=0.0):
     save_data(st.session_state.positions, st.session_state.global_ledger)
 
 # ==========================================
-# 5. 분석 엔진 (공통)
+# 4. 분석 엔진 (공통)
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def check_market_filter():
     try:
-        spy = safe_download("SPY", period="1y") 
-        if spy is None: return True, 0, 0, False, "알 수 없음"
-        if isinstance(spy.columns, pd.MultiIndex): spy.columns = spy.columns.get_level_values(0)
+        spy = safe_download_single("SPY", period="1y") 
+        if spy is None: return True, 0, 0, False, "알 수 없음 (데이터 수집 실패)"
+        
         spy['MA200'] = spy['Close'].rolling(200).mean()
         curr_spy, ma200_now = spy['Close'].iloc[-1], spy['MA200'].iloc[-1]
         is_trending_up = all(spy['MA200'].tail(6).iloc[i] > spy['MA200'].tail(6).iloc[i-1] for i in range(1, 6))
@@ -221,16 +235,15 @@ def compute_indicators(df):
 def analyze_ticker_from_bulk(ticker, all_data):
     if ticker not in all_data: return None
     df = all_data[ticker].copy()
-    if len(df) < 200: return None
+    if len(df) < 20: return None
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return compute_indicators(df)
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def analyze_ticker(ticker):
-    df = safe_download(ticker)
-    if df is None or len(df) < 200: return None
-    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+    df = safe_download_single(ticker)
+    if df is None or len(df) < 20: return None
     return compute_indicators(df)
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -268,7 +281,7 @@ def get_global_news():
         return []
 
 # ==========================================
-# 6. 매니저 공통 함수
+# 5. 매니저 공통 함수
 # ==========================================
 def update_position_state(tkr, pos, df):
     if df is None: return
@@ -324,16 +337,15 @@ def evaluate_turtle_position(df, pos, config, lt, total_capital, exchange_rate, 
     }
 
 # ==========================================
-# 7. 메인 UI 
+# 6. 메인 UI 
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.59 (Stable)", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.62 (Master Proxy)", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state:
     st.session_state.positions, st.session_state.global_ledger = load_data()
 
 st.sidebar.header("⚙️ 리스크 및 시스템 설정")
 
-# --- 캐시 초기화 버튼 (문제 해결의 핵심!) ---
 if st.sidebar.button("♻️ 데이터 캐시 강제 초기화 (오류 해결)", type="primary"):
     st.cache_data.clear()
     st.sidebar.success("✅ 캐시가 모두 삭제되었습니다. 스캔을 다시 실행해주세요!")
@@ -374,7 +386,7 @@ if up_file := st.sidebar.file_uploader("📂 백업 CSV 업로드"):
         except Exception as e: 
             st.sidebar.error(f"❌ 오류: {e}")
 
-st.title("🐢 Turtle System Pro V7.59")
+st.title("🐢 Turtle System Pro V7.62")
 
 is_bull, spy_val, ma200_val, is_trending, last_date = check_market_filter()
 st.caption(f"📅 **데이터 기준일:** {last_date}")
@@ -401,7 +413,7 @@ with st.expander("💡 현재 시장 상황 맞춤 트레이딩 가이드", expa
 tabs = st.tabs(["🚀 터틀", "📈 눌림목", "📉 BB낙폭", "📋 매니저", "🇺🇸 분석", "🌍 뉴스", "📊 일지"])
 
 # ==========================================
-# 8. 스캐너 탭 (오류 방지 및 데이터 현황 출력)
+# 7. 스캐너 탭
 # ==========================================
 for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"]):
     with tabs[i]:
@@ -412,9 +424,8 @@ for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 
             res = []
             all_data = bulk_download_all()
             
-            # --- 데이터 수집 현황 표시 (디버깅용) ---
             if len(all_data) == 0:
-                st.error("🚨 야후 파이낸스에서 데이터를 하나도 불러오지 못했습니다! 사이드바의 **[데이터 캐시 강제 초기화]** 버튼을 누른 후 다시 시도해주세요.")
+                st.error("🚨 야후 파이낸스에서 데이터를 불러오지 못했습니다. 사이드바의 **[데이터 캐시 강제 초기화]** 버튼을 누른 후 다시 시도해주세요.")
                 st.stop()
             else:
                 st.success(f"📊 정상 수집된 종목: **{len(all_data)}개** (전체 {len(TICKERS)}개 중)")
@@ -464,7 +475,7 @@ for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 
                         st.rerun()
 
 # ==========================================
-# 9. 매니저 탭 
+# 8. 매니저 탭 
 # ==========================================
 with tabs[3]:
     with st.expander("✍️ 수기 등록", expanded=False):
@@ -630,16 +641,36 @@ with tabs[3]:
     save_data(st.session_state.positions, st.session_state.global_ledger)  
 
 # ==========================================
-# 10. 나머지 탭 (분석 / 뉴스 / 일지) 
+# 9. 분석 / 뉴스 / 일지 탭
 # ==========================================
 with tabs[4]:
-    if (t_in := st.text_input("티커 분석").upper()) and st.button("분석 실행"):
-        if (d := analyze_ticker(t_in)) is not None:
-            st.info(f"**[{t_in}]** 종가: **${d['Close'].iloc[-1]:.2f}** | RSI: **{d['RSI'].iloc[-1]:.1f}**")
-            with st.expander("📋 SEC", expanded=True): 
-                [st.write(f"- {f['form']} ({f['date']}) [링크]({f['url']})") for f in get_sec_filings(t_in)]
-            with st.expander("📰 뉴스", expanded=True): 
-                [st.write(f"- [{n['title']}]({n['link']})") for n in get_stock_news(t_in)]
+    t_in = st.text_input("티커 분석 (예: AAPL)").strip().upper()
+    
+    if st.button("분석 실행"):
+        if t_in:
+            with st.spinner(f"'{t_in}' 종목 데이터 수집 중..."):
+                d = analyze_ticker(t_in)
+                
+                if d is not None:
+                    st.info(f"**[{t_in}]** 종가: **${d['Close'].iloc[-1]:.2f}** | RSI: **{d['RSI'].iloc[-1]:.1f}**")
+                    
+                    with st.expander("📋 SEC 공시 내역", expanded=True): 
+                        filings = get_sec_filings(t_in)
+                        if filings:
+                            [st.write(f"- {f['form']} ({f['date']}) [링크]({f['url']})") for f in filings]
+                        else:
+                            st.write("최근 공시 내역을 찾을 수 없습니다.")
+                            
+                    with st.expander("📰 관련 뉴스", expanded=True): 
+                        news = get_stock_news(t_in)
+                        if news:
+                            [st.write(f"- [{n['title']}]({n['link']})") for n in news]
+                        else:
+                            st.write("관련 뉴스를 찾을 수 없습니다.")
+                else:
+                    st.error(f"🚨 '{t_in}' 종목의 데이터를 불러올 수 없습니다. \n\n*원인: 잘못된 티커이거나, 상장된 지 20일이 안 된 신규 종목일 수 있습니다.*")
+        else:
+            st.warning("분석할 티커를 입력해주세요.")
 
 with tabs[5]:
     if st.button("🔄 뉴스 새로고침"): 

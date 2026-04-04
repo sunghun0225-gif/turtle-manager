@@ -376,15 +376,28 @@ with tabs[3]:
                     {'val': add_pt, 'name': '불타기', 'col': 'orange'}
                 ])
                 
+                # 추천 수량 계산
+                risk_sh = (total_capital * (config["risk_pct"] / 100)) / (lt['N'] * exchange_rate) if lt['N'] > 0 else 0
+                cash_sh = (total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate)
+                add_shares = round(min(risk_sh, cash_sh), 4)
+
                 effective_stop = max(dyn_stop, trail)
                 stop_name = "Trailing(10일저점)" if effective_stop == trail else "통합손절(-2N)"
 
                 if lt['Close'] < effective_stop:
                     st.error(f"🛑 {stop_name} 이탈! 전량 매도 권장 (${effective_stop:.2f})")
                 elif lt['Close'] >= add_pt:
-                    st.success(f"🔥 불타기(추가매수) 포인트 도달! (${add_pt:.2f})")
+                    if curr_u < max_u:
+                        st.success(f"🔥 불타기(추가매수) 포인트 도달! (${add_pt:.2f}) 👉 추천 수량: {add_shares:.4f}주 ({curr_u + 1}유닛)")
+                    else:
+                        st.warning(f"⚠️ 불타기 포인트(${add_pt:.2f}) 도달했으나 종목 할당 유닛 초과로 추가매수 금지")
                 else:
-                    st.info(f"✅ 순항 중 (수익률: {profit:.2%} | {stop_name}: ${effective_stop:.2f})")
+                    # [수정] 도달 전 미리 다음 불타기 정보 표시
+                    status_msg = f"✅ 순항 중 (수익률: {profit:.2%} | {stop_name}: ${effective_stop:.2f})"
+                    if curr_u < max_u:
+                        st.info(f"{status_msg} \n\n **📍 다음 불타기(${add_pt:.2f})에서 추천 매수수량 {add_shares:.4f}주 ({curr_u + 1}유닛)**")
+                    else:
+                        st.info(f"{status_msg} \n\n **📍 다음 불타기(${add_pt:.2f})에서 종목 할당 유닛 초과로 추가매수금지**")
             
             elif "BB" in st_n or "낙폭과대" in st_n or "눌림목" in st_n:
                 profit_highest = (pos['Highest'] / avg_e - 1) if avg_e > 0 else 0

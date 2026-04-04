@@ -4,11 +4,13 @@ import pandas as pd
 import os, time, requests, json, feedparser, urllib.parse
 import altair as alt
 from datetime import datetime, timedelta
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # ==========================================
-# 1. 설정 및 리스크 파라미터
+# 1. 설정 및 리스크 파라미터 
 # ==========================================
 DB_FILE = 'internal_memory.csv'
 MAX_TOTAL_UNITS = 10
@@ -25,18 +27,32 @@ strategy_desc = {
     "📉 BB-낙폭과대": "볼린저 밴드 하단 및 단기 이격도 과다로 인해 V자 반등이 기대되는 종목입니다. (낙폭과대)"
 }
 
+# ==========================================
+# 2. 개선된 safe_download (에러핸들링 + 성능 + 보안 강화)
+# ==========================================
 def safe_download(ticker_symbol, period="1y", retries=3):
+    """기존 동작 100% 유지 + 에러 상세 메시지 + timeout 증가 + threads=True (st.toast 제거)"""
     for attempt in range(retries):
         try:
-            df = yf.download(ticker_symbol, period=period, progress=False, timeout=15)
-            if len(df) > 100: return df
-        except:
-            if attempt == retries - 1: st.toast(f"⚠️ {ticker_symbol} 데이터 로드 실패", icon="⚠️")
-            time.sleep(1.5 ** attempt) 
+            df = yf.download(
+                ticker_symbol,
+                period=period,
+                progress=False,
+                timeout=20,
+                threads=True,
+                repair=True
+            )
+            if len(df) > 100:
+                return df
+        except Exception as e:
+            if attempt == retries - 1:
+                # 스레드 충돌 방지를 위해 print 사용
+                print(f"⚠️ {ticker_symbol} 데이터 로드 실패 (시도 {retries}회): {str(e)[:80]}")
+            time.sleep(1.5 ** attempt)
     return None
 
 # ==========================================
-# 2. S&P 500 + 나스닥 100 우량주 유니버스
+# 3. S&P 500 + 나스닥 100 우량주 유니버스 
 # ==========================================
 TICKERS = [
     'A', 'AAPL', 'ABBV', 'ABT', 'ACGL', 'ACN', 'ADBE', 'ADI', 'ADM', 'ADP', 'ADSK', 'AEE', 'AEP', 'AES', 'AFL', 'AIG', 'AIZ', 'AJG', 'AKAM', 'ALB', 'ALGN', 'ALL', 'ALLE', 'AMAT', 'AMCR', 'AMD', 'AME', 'AMGN', 'AMP', 'AMT', 'AMZN', 'ANET', 'ANSS', 'AON', 'AOS', 'APA', 'APD', 'APH', 'APTV', 'ARE', 'ATO', 'AVB', 'AVGO', 'AWK', 'AXON', 'AXP', 'AZO', 
@@ -71,7 +87,7 @@ TICKERS = [
 TICKERS = sorted(list(set(TICKERS)))
 
 # ==========================================
-# 3. 데이터 입출력 및 기록 헬퍼 함수
+# 4. 데이터 입출력 및 기록 헬퍼 함수 
 # ==========================================
 def load_data():
     positions, global_ledger = {}, []
@@ -99,8 +115,14 @@ def load_data():
     return positions, global_ledger
 
 def save_data(positions, global_ledger):
-    rows = [{'Ticker': k, 'Units': v.get('Units', 1), 'Highest': v['Highest'], 'History': json.dumps(v.get('History', [])), 'Strategy': v.get('Strategy', '🚀 터틀-상승'), 'last_pyramid_level': v.get('last_pyramid_level')} for k, v in positions.items()]
-    rows.append({'Ticker': '_GLOBAL_LEDGER_', 'Units': 0, 'Highest': 0.0, 'History': json.dumps(global_ledger), 'Strategy': 'SYSTEM', 'last_pyramid_level': None})
+    """항상 최신 상태를 저장"""
+    rows = [{'Ticker': k, 'Units': v.get('Units', 1), 'Highest': v['Highest'], 
+             'History': json.dumps(v.get('History', [])), 
+             'Strategy': v.get('Strategy', '🚀 터틀-상승'), 
+             'last_pyramid_level': v.get('last_pyramid_level')} 
+            for k, v in positions.items()]
+    rows.append({'Ticker': '_GLOBAL_LEDGER_', 'Units': 0, 'Highest': 0.0, 
+                 'History': json.dumps(global_ledger), 'Strategy': 'SYSTEM', 'last_pyramid_level': None})
     pd.DataFrame(rows).to_csv(DB_FILE, index=False)
 
 def log_trade(tkr, trade_type, price, shares, profit=0.0):
@@ -111,7 +133,7 @@ def log_trade(tkr, trade_type, price, shares, profit=0.0):
     save_data(st.session_state.positions, st.session_state.global_ledger)
 
 # ==========================================
-# 4. 분석 엔진 (지표 계산)
+# 5. 분석 엔진 
 # ==========================================
 @st.cache_data(ttl=3600)
 def check_market_filter():
@@ -123,62 +145,146 @@ def check_market_filter():
         curr_spy, ma200_now = spy['Close'].iloc[-1], spy['MA200'].iloc[-1]
         is_trending_up = all(spy['MA200'].tail(6).iloc[i] > spy['MA200'].tail(6).iloc[i-1] for i in range(1, 6))
         return (curr_spy > ma200_now) and is_trending_up, curr_spy, ma200_now, is_trending_up
-    except: return True, 0, 0, False
+    except Exception as e:
+        st.toast(f"시장 필터 계산 중 오류: {str(e)[:80]}", icon="⚠️")
+        return True, 0, 0, False
 
 @st.cache_data(ttl=1800)
 def analyze_ticker(ticker):
-    df = safe_download(ticker) 
-    if df is None or len(df) < 200: return None
-    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+    """기존 로직 100% 유지 + 내부 예외 처리 (st.toast 제외)"""
+    try:
+        df = safe_download(ticker) 
+        if df is None or len(df) < 200: return None
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
 
-    df['prev_close'] = df['Close'].shift(1)
-    df['TR'] = df.apply(lambda x: max(x['High']-x['Low'], abs(x['High']-x['prev_close']) if pd.notna(x['prev_close']) else 0, abs(x['Low']-x['prev_close']) if pd.notna(x['prev_close']) else 0), axis=1)
-    df['N'] = df['TR'].rolling(20).mean()
-    
-    df['High20'] = df['High'].rolling(20).max().shift(1)
-    df['Low10'] = df['Low'].rolling(10).min().shift(1)
-    
-    df['MA200'] = df['Close'].rolling(200).mean()
-    df['MA20'] = df['Close'].rolling(20).mean()
-    df['MA5'] = df['Close'].rolling(5).mean()
+        df['prev_close'] = df['Close'].shift(1)
+        df['TR'] = df.apply(lambda x: max(x['High']-x['Low'], 
+                                          abs(x['High']-x['prev_close']) if pd.notna(x['prev_close']) else 0, 
+                                          abs(x['Low']-x['prev_close']) if pd.notna(x['prev_close']) else 0), axis=1)
+        df['N'] = df['TR'].rolling(20).mean()
+        
+        df['High20'] = df['High'].rolling(20).max().shift(1)
+        df['Low10'] = df['Low'].rolling(10).min().shift(1)
+        
+        df['MA200'] = df['Close'].rolling(200).mean()
+        df['MA20'] = df['Close'].rolling(20).mean()
+        df['MA5'] = df['Close'].rolling(5).mean()
 
-    df['MA18'] = df['Close'].rolling(18).mean()
-    df['Std18'] = df['Close'].rolling(18).std()
-    df['BB_Lower_18'] = df['MA18'] - (df['Std18'] * 2)
+        df['MA18'] = df['Close'].rolling(18).mean()
+        df['Std18'] = df['Close'].rolling(18).std()
+        df['BB_Lower_18'] = df['MA18'] - (df['Std18'] * 2)
 
-    df['Std5'] = df['Close'].rolling(5).std()
-    df['BB_Lower_5'] = df['MA5'] - (df['Std5'] * 2)
+        df['Std5'] = df['Close'].rolling(5).std()
+        df['BB_Lower_5'] = df['MA5'] - (df['Std5'] * 2)
 
-    delta = df['Close'].diff()
-    avg_gain = delta.where(delta > 0, 0).ewm(alpha=1/14, adjust=False).mean()
-    avg_loss = -delta.where(delta < 0, 0).ewm(alpha=1/14, adjust=False).mean()
-    df['RSI'] = 100 - (100 / (1 + (avg_gain / (avg_loss + 1e-9))))
-    
-    return df.drop(columns=['prev_close'])
+        delta = df['Close'].diff()
+        avg_gain = delta.where(delta > 0, 0).ewm(alpha=1/14, adjust=False).mean()
+        avg_loss = -delta.where(delta < 0, 0).ewm(alpha=1/14, adjust=False).mean()
+        df['RSI'] = 100 - (100 / (1 + (avg_gain / (avg_loss + 1e-9))))
+        
+        return df.drop(columns=['prev_close'])
+    except Exception as e:
+        # 스레드 충돌 방지
+        print(f"⚠️ {ticker} 분석 중 오류: {str(e)[:80]}")
+        return None
 
 @st.cache_data(ttl=86400)
 def get_sec_filings(ticker: str):
     try:
-        cik = next((str(v["cik_str"]).zfill(10) for v in requests.get("https://www.sec.gov/files/company_tickers.json", headers={"User-Agent": "TurtlePro/1.0"}, verify=False).json().values() if v["ticker"].upper() == ticker.upper()), None)
+        headers = {"User-Agent": "TurtlePro/1.0 (contact: your@email.com)"}
+        cik = next((str(v["cik_str"]).zfill(10) for v in requests.get(
+            "https://www.sec.gov/files/company_tickers.json", 
+            headers=headers, timeout=10).json().values() 
+            if v["ticker"].upper() == ticker.upper()), None)
         if not cik: return []
-        recent = requests.get(f"https://data.sec.gov/submissions/CIK{cik}.json", headers={"User-Agent": "TurtlePro/1.0"}, verify=False).json().get("filings", {}).get("recent", {})
-        return [{"form": {"10-K": "📊 연간", "10-Q": "📋 분기", "8-K": "🔔 수시", "4": "👤 내부자"}.get(recent["form"][i], f"📄 {recent['form'][i]}"), "date": recent["filingDate"][i], "url": f"https://www.sec.gov/cgi-bin/browse-edgar?CIK={cik}&action=getcompany"} for i in range(min(10, len(recent.get("form", []))))]
-    except: return []
+        recent = requests.get(f"https://data.sec.gov/submissions/CIK{cik}.json", 
+                              headers=headers, timeout=10).json().get("filings", {}).get("recent", {})
+        return [{"form": {"10-K": "📊 연간", "10-Q": "📋 분기", "8-K": "🔔 수시", "4": "👤 내부자"}.get(recent["form"][i], f"📄 {recent['form'][i]}"), 
+                 "date": recent["filingDate"][i], 
+                 "url": f"https://www.sec.gov/cgi-bin/browse-edgar?CIK={cik}&action=getcompany"} 
+                for i in range(min(10, len(recent.get("form", []))))]
+    except Exception:
+        st.toast(f"SEC 데이터 로드 실패 ({ticker})", icon="⚠️")
+        return []
 
 def get_stock_news(query_name):
     try:
         feed = feedparser.parse(f"https://news.google.com/rss/search?q={urllib.parse.quote(f'{query_name} stock')}+when:90d&hl=en-US&gl=US&ceid=US:en")
-        return sorted([{"title": e.title, "link": e.link, "date": (datetime(*e.published_parsed[:6]) + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M (KST)") if e.get("published_parsed") else "미상", "raw": e.get("published_parsed", (0,)*9)} for e in feed.entries[:15]], key=lambda x: x['raw'], reverse=True)[:8]
-    except: return []
+        return sorted([{"title": e.title, "link": e.link, "date": (datetime(*e.published_parsed[:6]) + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M (KST)") if e.get("published_parsed") else "미상", "raw": e.get("published_parsed", (0,)*9)} 
+                       for e in feed.entries[:15]], key=lambda x: x['raw'], reverse=True)[:8]
+    except Exception:
+        st.toast("뉴스 로드 실패", icon="⚠️")
+        return []
 
 @st.cache_data(ttl=1800)
 def get_global_news():
     try:
-        return [{"title": e.title, "link": e.link, "date": (datetime(*e.published_parsed[:6]) + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M') if e.get("published_parsed") else "미상"} for e in feedparser.parse("https://news.google.com/rss/search?q=global+economy+market+when:24h&hl=en-US&gl=US&ceid=US:en").entries[:10]]
-    except: return []
+        return [{"title": e.title, "link": e.link, "date": (datetime(*e.published_parsed[:6]) + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M') if e.get("published_parsed") else "미상"} 
+                for e in feedparser.parse("https://news.google.com/rss/search?q=global+economy+market+when:24h&hl=en-US&gl=US&ceid=US:en").entries[:10]]
+    except Exception:
+        st.toast("글로벌 뉴스 로드 실패", icon="⚠️")
+        return []
 
 # ==========================================
-# 5. 메인 UI 및 사이드바 
+# 6. 유지보수성 개선: 전략 평가 공통 함수 
+# ==========================================
+def update_position_state(tkr, pos, df):
+    """매니저 탭에서 반복되던 Units / last_pyramid_level / Highest 업데이트 로직 추출"""
+    if df is None: return
+    lt = df.iloc[-1]
+    total_s, avg_e, active_lots = 0.0, 0.0, []
+    
+    for h in pos['History']:
+        sh = float(h['shares'])
+        if h.get('type', 'Buy') == 'Buy':
+            avg_e = (avg_e * total_s + h['price'] * sh) / (total_s + sh) if (total_s + sh) > 0 else 0
+            total_s += sh
+            active_lots.append({'price': h['price'], 'shares': sh})
+        else:
+            total_s = max(0.0, total_s - sh)
+            rem_sell = sh
+            while rem_sell > 0.0001 and active_lots:
+                if active_lots[-1]['shares'] > rem_sell: 
+                    active_lots[-1]['shares'] -= rem_sell
+                    rem_sell = 0
+                else: 
+                    rem_sell -= active_lots[-1]['shares']
+                    active_lots.pop()
+    
+    if total_s <= 0.0001:
+        return None  # 삭제 대상
+    
+    pos['Units'] = len(active_lots)
+    pos['last_pyramid_level'] = active_lots[-1]['price'] if active_lots else avg_e
+    if lt['Close'] > pos['Highest']: 
+        pos['Highest'] = lt['Close']
+    return pos, avg_e, total_s, lt
+
+def evaluate_turtle_position(df, pos, config, lt, total_capital, exchange_rate, avg_e):
+    """터틀 전략 전용 평가 로직 분리 (avg_e 원복 완료)"""
+    base_p = pos.get('last_pyramid_level', avg_e) 
+    dyn_stop = base_p - (config.get("initial_stop_n", 2.0) * lt['N'])
+    add_pt = base_p + (config.get("pyramid_n", 0.5) * lt['N'])
+    trail = lt['Low10']
+    
+    risk_sh = (total_capital * (config["risk_pct"] / 100)) / (lt['N'] * exchange_rate) if lt['N'] > 0 else 0
+    cash_sh = (total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate)
+    add_shares = round(min(risk_sh, cash_sh), 4)
+
+    effective_stop = max(dyn_stop, trail)
+    stop_name = "Trailing(10일저점)" if effective_stop == trail else "통합손절(-2N)"
+    
+    return {
+        'dyn_stop': dyn_stop,
+        'add_pt': add_pt,
+        'trail': trail,
+        'effective_stop': effective_stop,
+        'stop_name': stop_name,
+        'add_shares': add_shares
+    }
+
+# ==========================================
+# 7. 메인 UI 
 # ==========================================
 st.set_page_config(page_title="Turtle Pro V7.55 (Master)", layout="centered", page_icon="🐢")
 
@@ -190,7 +296,6 @@ total_capital = int(st.sidebar.number_input("시드머니 (만원)", value=200, 
 exchange_rate = st.sidebar.number_input("현재환율 (₩/$)", value=1450, step=10)
 st.sidebar.info(f"💡 **현재 유니버스:**\nS&P 500, 나스닥 100 등 총 **{len(TICKERS)}개** 종목 무필터 스캔 중.")
 
-# --- 리스크 게이지 ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("🚦 계좌 리스크 게이지")
 current_units = sum(pos.get('Units', 0) for pos in st.session_state.positions.values())
@@ -205,19 +310,23 @@ else:
     st.sidebar.success("✅ 리스크 관리 양호")
 st.sidebar.markdown("---")
 
-# --- CSV 백업/복구 업로더 ---
 if up_file := st.sidebar.file_uploader("📂 백업 CSV 업로드"):
     if st.sidebar.button("데이터 즉시 복구", type="primary"):
         try:
             df = pd.read_csv(up_file)
-            st.session_state.positions = {row['Ticker']: {'Units': len([h for h in (json.loads(row['History']) if isinstance(row['History'], str) else []) if h.get('type', 'Buy') == 'Buy']), 'Highest': float(row['Highest']), 'History': json.loads(row['History']) if isinstance(row['History'], str) else [], 'Strategy': row['Strategy'], 'last_pyramid_level': row.get('last_pyramid_level') if pd.notna(row.get('last_pyramid_level')) else None} for _, row in df[df['Ticker'] != '_GLOBAL_LEDGER_'].iterrows()}
+            st.session_state.positions = {row['Ticker']: {
+                'Units': len([h for h in (json.loads(row['History']) if isinstance(row['History'], str) else []) if h.get('type', 'Buy') == 'Buy']), 
+                'Highest': float(row['Highest']), 
+                'History': json.loads(row['History']) if isinstance(row['History'], str) else [], 
+                'Strategy': row['Strategy'], 
+                'last_pyramid_level': row.get('last_pyramid_level') if pd.notna(row.get('last_pyramid_level')) else None
+            } for _, row in df[df['Ticker'] != '_GLOBAL_LEDGER_'].iterrows()}
             st.session_state.global_ledger = next((json.loads(row['History']) for _, row in df[df['Ticker'] == '_GLOBAL_LEDGER_'].iterrows()), [])
             save_data(st.session_state.positions, st.session_state.global_ledger)
             st.rerun()
         except Exception as e: 
             st.sidebar.error(f"❌ 오류: {e}")
 
-# 메인 타이틀 및 시장 상태 필터
 st.title("🐢 Turtle System Pro V7.55")
 is_bull, spy_val, ma200_val, is_trending = check_market_filter()
 
@@ -226,7 +335,6 @@ if is_bull:
 else: 
     st.error(f"🔴 시장 경고 | SPY: ${spy_val:.2f} / MA200: ${ma200_val:.2f} | {'📈 상승 추세' if is_trending else '➡️ 횡보/하락'}")
 
-# --- 시장 상황별 맞춤 트레이딩 가이드 ---
 with st.expander("💡 현재 시장 상황 맞춤 트레이딩 가이드", expanded=True):
     if spy_val >= ma200_val and is_trending:
         st.markdown("#### 🌞 [완벽한 강세장] 적극적인 추세 추종")
@@ -248,7 +356,7 @@ with st.expander("💡 현재 시장 상황 맞춤 트레이딩 가이드", expa
 tabs = st.tabs(["🚀 터틀", "📈 눌림목", "📉 BB낙폭", "📋 매니저", "🇺🇸 분석", "🌍 뉴스", "📊 일지"])
 
 # ==========================================
-# 6. 스캐너 탭 
+# 8. 스캐너 탭 - 성능 대폭 개선 (ThreadPoolExecutor)
 # ==========================================
 for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"]):
     with tabs[i]:
@@ -256,28 +364,38 @@ for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 
         config = STRATEGY_CONFIG.get(s_name, {"risk_pct": 2.0})
         if st.button(f"🔎 {s_name} 스캔 (총 {len(TICKERS)}개)", key=f"run_{i}", use_container_width=True):
             res, is_cand = [], False
-            pb = st.progress(0, text="전 종목 분석 중... (최대 5분 소요)")
+            pb = st.progress(0, text="전 종목 분석 중... (병렬 처리 중)")
             
-            for idx, tkr in enumerate(TICKERS):
-                pb.progress((idx + 1) / len(TICKERS))
-                if (df := analyze_ticker(tkr)) is not None:
-                    lt, pv = df.iloc[-1], df.iloc[-2]
-                    cond = False
-                    
-                    if "터틀" in s_name:
-                        cond = (lt['Close'] > lt['High20']) and (lt['Close'] > lt['MA200'])
-                    elif "눌림목" in s_name:
-                        signal = (df['Low'].iloc[-5:] <= df['MA20'].iloc[-5:]).any()
-                        cond = signal and (lt['Close'] > lt['MA5']) and (pv['Close'] <= pv['MA5']) and (lt['Close'] > lt['MA200'])
-                    else: 
-                        cond = (lt['BB_Lower_5'] < lt['BB_Lower_18']) and (lt['BB_Lower_5'] <= lt['Close'] <= lt['BB_Lower_18'])
+            # === 성능 개선 핵심: 병렬 처리 ===
+            with ThreadPoolExecutor(max_workers=12) as executor:
+                future_to_tkr = {executor.submit(analyze_ticker, tkr): tkr for tkr in TICKERS}
+                
+                for idx, future in enumerate(as_completed(future_to_tkr)):
+                    tkr = future_to_tkr[future]
+                    pb.progress((idx + 1) / len(TICKERS), text=f"{idx+1}/{len(TICKERS)} 처리 중...")
+                    try:
+                        df = future.result()
+                        if df is not None:
+                            lt, pv = df.iloc[-1], df.iloc[-2]
+                            cond = False
+                            
+                            if "터틀" in s_name:
+                                cond = (lt['Close'] > lt['High20']) and (lt['Close'] > lt['MA200'])
+                            elif "눌림목" in s_name:
+                                signal = (df['Low'].iloc[-5:] <= df['MA20'].iloc[-5:]).any()
+                                cond = signal and (lt['Close'] > lt['MA5']) and (pv['Close'] <= pv['MA5']) and (lt['Close'] > lt['MA200'])
+                            else: 
+                                cond = (lt['BB_Lower_5'] < lt['BB_Lower_18']) and (lt['BB_Lower_5'] <= lt['Close'] <= lt['BB_Lower_18'])
 
-                    if cond:
-                        risk_sh = (total_capital * (config["risk_pct"] / 100)) / (lt['N'] * exchange_rate) if lt['N'] > 0 else 0
-                        cash_sh = (total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate)
-                        final_sh = round(min(risk_sh, cash_sh), 4)
-                        if final_sh >= 0.0001: 
-                            res.append({"tkr": tkr, "p": lt['Close'], "sh": final_sh, "n": lt['N']})
+                            if cond:
+                                risk_sh = (total_capital * (config["risk_pct"] / 100)) / (lt['N'] * exchange_rate) if lt['N'] > 0 else 0
+                                cash_sh = (total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate)
+                                final_sh = round(min(risk_sh, cash_sh), 4)
+                                if final_sh >= 0.0001: 
+                                    res.append({"tkr": tkr, "p": lt['Close'], "sh": final_sh, "n": lt['N']})
+                    except Exception:
+                        continue
+            
             pb.empty()
             if not res: 
                 st.info("ℹ️ 포착된 종목이 없습니다.")
@@ -296,7 +414,7 @@ for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 
                         st.rerun()
 
 # ==========================================
-# 7. 매니저 탭 
+# 9. 매니저 탭 
 # ==========================================
 with tabs[3]:
     with st.expander("✍️ 수기 등록", expanded=False):
@@ -314,41 +432,21 @@ with tabs[3]:
             log_trade(m_t, 'Buy', m_p, m_h)
             st.rerun()
 
-    needs_save = False
     for tkr, pos in list(st.session_state.positions.items()):
-        if (df := analyze_ticker(tkr)) is None: continue
-        lt, st_n, config = df.iloc[-1], pos['Strategy'], STRATEGY_CONFIG.get(pos['Strategy'], {"risk_pct": 2.0, "max_unit_per_stock": 2})
-        total_s, avg_e, active_lots = 0.0, 0.0, []
+        df = analyze_ticker(tkr)
+        if df is None: continue
+        st_n = pos['Strategy']
+        config = STRATEGY_CONFIG.get(st_n, {"risk_pct": 2.0, "max_unit_per_stock": 2})
         
-        for h in pos['History']:
-            sh = float(h['shares'])
-            if h.get('type', 'Buy') == 'Buy':
-                avg_e = (avg_e * total_s + h['price'] * sh) / (total_s + sh) if (total_s + sh) > 0 else 0
-                total_s += sh
-                active_lots.append({'price': h['price'], 'shares': sh})
-            else:
-                total_s = max(0.0, total_s - sh)
-                rem_sell = sh
-                while rem_sell > 0.0001 and active_lots:
-                    if active_lots[-1]['shares'] > rem_sell: 
-                        active_lots[-1]['shares'] -= rem_sell
-                        rem_sell = 0
-                    else: 
-                        rem_sell -= active_lots[-1]['shares']
-                        active_lots.pop()
-        
-        if total_s <= 0.0001:
+        updated = update_position_state(tkr, pos, df)
+        if updated is None:
             del st.session_state.positions[tkr]
-            needs_save = True
+            save_data(st.session_state.positions, st.session_state.global_ledger)
+            st.rerun()
             continue
             
-        pos['Units'] = len(active_lots)
-        pos['last_pyramid_level'] = active_lots[-1]['price'] if active_lots else avg_e
+        pos, avg_e, total_s, lt = updated   
         profit = (lt['Close'] / avg_e - 1) if avg_e > 0 else 0.0
-        
-        if lt['Close'] > pos['Highest']: 
-            pos['Highest'] = lt['Close']
-            needs_save = True
 
         with st.container(border=True):
             h1, h2 = st.columns([4, 1])
@@ -362,28 +460,26 @@ with tabs[3]:
             curr_u = pos['Units']
             fill_pct = (curr_u / max_u) * 100 if max_u > 0 else 0
             
-            # [수정] 횟수(회) 단어를 유닛(Unit)으로 변경
             st.write(f"**🛒 진입 현황:** 총 **{curr_u} 유닛** 매수 진행 / 최대 **{max_u} 유닛** 진입 가능 (`할당량의 {fill_pct:.0f}%` 채움)")
             st.progress(min(curr_u / max_u, 1.0) if max_u > 0 else 0.0)
 
             lvls, add_pt = [{'val': avg_e, 'name': '평단가', 'col': 'gray'}], 0.0
 
             if "터틀" in st_n:
-                base_p = pos.get('last_pyramid_level', avg_e)
-                dyn_stop, add_pt, trail = base_p - (2.0 * lt['N']), base_p + (0.5 * lt['N']), lt['Low10']
+                eval_info = evaluate_turtle_position(df, pos, config, lt, total_capital, exchange_rate, avg_e)
+                dyn_stop = eval_info['dyn_stop']
+                add_pt = eval_info['add_pt']
+                trail = eval_info['trail']
+                effective_stop = eval_info['effective_stop']
+                stop_name = eval_info['stop_name']
+                add_shares = eval_info['add_shares']
+                
                 lvls.extend([
                     {'val': dyn_stop, 'name': '통합손절', 'col': 'red'}, 
                     {'val': trail, 'name': 'Trailing', 'col': 'green'}, 
                     {'val': add_pt, 'name': '불타기', 'col': 'orange'}
                 ])
                 
-                risk_sh = (total_capital * (config["risk_pct"] / 100)) / (lt['N'] * exchange_rate) if lt['N'] > 0 else 0
-                cash_sh = (total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate)
-                add_shares = round(min(risk_sh, cash_sh), 4)
-
-                effective_stop = max(dyn_stop, trail)
-                stop_name = "Trailing(10일저점)" if effective_stop == trail else "통합손절(-2N)"
-
                 if lt['Close'] < effective_stop:
                     st.error(f"🛑 {stop_name} 이탈! 전량 매도 권장 (${effective_stop:.2f})")
                 elif lt['Close'] >= add_pt:
@@ -468,7 +564,8 @@ with tabs[3]:
                     if st.session_state.global_ledger[idx]['ticker'] == tkr: 
                         st.session_state.global_ledger.pop(idx)
                         break
-                pos['History'].pop()
+                if pos['History']:
+                    pos['History'].pop()
                 save_data(st.session_state.positions, st.session_state.global_ledger)
                 st.rerun()
 
@@ -480,10 +577,10 @@ with tabs[3]:
                 else:
                     st.write("거래 내역이 없습니다.")
 
-    if needs_save: save_data(st.session_state.positions, st.session_state.global_ledger)
+    save_data(st.session_state.positions, st.session_state.global_ledger)  
 
 # ==========================================
-# 8 & 9. 분석 / 뉴스 / 일지 탭
+# 10. 나머지 탭 (분석 / 뉴스 / 일지) 
 # ==========================================
 with tabs[4]:
     if (t_in := st.text_input("티커 분석").upper()) and st.button("분석 실행"):

@@ -7,31 +7,14 @@ import altair as alt
 from datetime import datetime, timedelta
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import ssl
-import urllib3
 import locale
 import pandas.tseries.offsets as offsets
 
-# ==========================================
-# [핵심] SSL 보안 경고 무시 및 야후 파이낸스 차단 우회 세션
-# ==========================================
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-ssl._create_default_https_context = ssl._create_unverified_context
-
+# 시스템에 따라 한글 요일이 깨질 수 있으므로 예외 처리
 try:
     locale.setlocale(locale.LC_TIME, 'ko_KR.UTF-8')
 except:
     pass
-
-yf_session = requests.Session()
-yf_session.verify = False
-yf_session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Accept-Encoding': 'gzip, deflate',
-    'Connection': 'keep-alive',
-})
 
 # ==========================================
 # 1. 설정 및 리스크 파라미터
@@ -83,7 +66,7 @@ TICKERS = [
 TICKERS = sorted(list(set(TICKERS)))
 
 # ==========================================
-# 2. 데이터 다운로드 로직 (우회 세션 + fallback 적용)
+# 2. 데이터 다운로드 로직 (순정 yfinance 사용)
 # ==========================================
 def get_last_trading_date():
     today = pd.Timestamp.now(tz='America/New_York').normalize()
@@ -94,16 +77,16 @@ def get_last_trading_date():
 
     while True:
         test_date = last_trading.strftime('%Y-%m-%d')
-        df_test = yf.download("SPY", start=test_date, end=test_date, progress=False, timeout=10, session=yf_session)
+        df_test = yf.download("SPY", start=test_date, end=test_date, progress=False, timeout=10)
         if len(df_test) > 0:
             return last_trading
         last_trading -= timedelta(days=1)
 
 def safe_download_single(ticker_symbol, period="1y", retries=3):
-    """단일 종목 다운로드 (history + 우회 세션)"""
+    """단일 종목 다운로드 (순정 방식)"""
     for attempt in range(retries):
         try:
-            tkr = yf.Ticker(ticker_symbol, session=yf_session)
+            tkr = yf.Ticker(ticker_symbol)
             df = tkr.history(period=period)
             if len(df) > 20:
                 if not isinstance(df.index, pd.DatetimeIndex):
@@ -113,10 +96,9 @@ def safe_download_single(ticker_symbol, period="1y", retries=3):
                 return df
         except Exception:
             pass
-        # 방법 2: yf.download fallback
+        
         try:
-            df = yf.download(ticker_symbol, period=period, progress=False,
-                             timeout=15, session=yf_session)
+            df = yf.download(ticker_symbol, period=period, progress=False, timeout=15)
             if len(df) > 20:
                 if df.index.tz is not None:
                     df.index = df.index.tz_localize(None)
@@ -128,10 +110,10 @@ def safe_download_single(ticker_symbol, period="1y", retries=3):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def bulk_download_all():
-    """스캐너 전용 대량 다운로드 (청크 실패 시 개별 fallback)"""
+    """스캐너 전용 대량 다운로드"""
     chunks = [TICKERS[i:i+50] for i in range(0, len(TICKERS), 50)]
     all_data = {}
-    pb = st.progress(0, text="📥 야후 파이낸스 대량 데이터 수집 중... (우회망 작동 중)")
+    pb = st.progress(0, text="📥 야후 파이낸스 대량 데이터 수집 중...")
 
     for idx, chunk in enumerate(chunks):
         chunk_ok = False
@@ -139,7 +121,7 @@ def bulk_download_all():
             data = yf.download(
                 chunk, period="1y", progress=False,
                 timeout=25, threads=True, repair=True,
-                group_by='ticker', session=yf_session
+                group_by='ticker'
             )
             if isinstance(data.columns, pd.MultiIndex):
                 for ticker in chunk:
@@ -155,14 +137,13 @@ def bulk_download_all():
                 if len(data) > 20 and len(chunk) == 1:
                     all_data[chunk[0]] = data.dropna(how='all')
                     chunk_ok = True
-        except Exception as e:
+        except Exception:
             chunk_ok = False
 
-        # ★ 청크 전체 실패 시 개별 티커 fallback
         if not chunk_ok:
             for ticker in chunk:
                 try:
-                    tkr_obj = yf.Ticker(ticker, session=yf_session)
+                    tkr_obj = yf.Ticker(ticker)
                     df = tkr_obj.history(period="1y")
                     if len(df) > 20:
                         if df.index.tz is not None:
@@ -227,16 +208,11 @@ def log_trade(tkr, trade_type, price, shares, profit=0.0):
 @st.cache_data(ttl=3600, show_spinner=False)
 def check_market_filter():
     try:
-        spy = None
-
-        # 방법 1: safe_download_single
         spy = safe_download_single("SPY", period="1y")
 
-        # 방법 2: yf.download 직접 시도
         if spy is None or len(spy) < 20:
             try:
-                raw = yf.download("SPY", period="1y", progress=False,
-                                  timeout=20, session=yf_session)
+                raw = yf.download("SPY", period="1y", progress=False, timeout=20)
                 if len(raw) > 20:
                     spy = raw
                     if spy.index.tz is not None:
@@ -247,7 +223,6 @@ def check_market_filter():
         if spy is None or len(spy) < 20:
             return True, 0.0, 0.0, False, "데이터 수집 실패"
 
-        # MultiIndex 처리 (yf.download가 MultiIndex 반환하는 경우)
         if isinstance(spy.columns, pd.MultiIndex):
             spy.columns = spy.columns.get_level_values(0)
 
@@ -265,7 +240,6 @@ def check_market_filter():
         return True, 0.0, 0.0, False, f"오류: {str(e)[:40]}"
 
 def compute_indicators(df):
-    # MultiIndex 정리
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
@@ -416,7 +390,7 @@ def evaluate_turtle_position(df, pos, config, lt, total_capital, exchange_rate, 
 # ==========================================
 # 6. 메인 UI
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.63 (Master Proxy)", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.64 (Master Stable)", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state:
     st.session_state.positions, st.session_state.global_ledger = load_data()
@@ -466,7 +440,7 @@ if up_file := st.sidebar.file_uploader("📂 백업 CSV 업로드"):
         except Exception as e:
             st.sidebar.error(f"❌ 오류: {e}")
 
-st.title("🐢 Turtle System Pro V7.63")
+st.title("🐢 Turtle System Pro V7.64")
 
 is_bull, spy_val, ma200_val, is_trending, last_date = check_market_filter()
 st.caption(f"📅 **데이터 기준일:** {last_date}")

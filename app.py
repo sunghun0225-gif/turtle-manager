@@ -5,13 +5,12 @@ import numpy as np
 import os, time, requests, json, feedparser, urllib.parse
 import altair as alt
 from datetime import datetime, timedelta
-import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 import locale
+import pandas.tseries.offsets as offsets
 
-# 시스템에 따라 한글 요일이 깨질 수 있으므로 예외 처리 (한국어 환경 시도)
+# 시스템에 따라 한글 요일이 깨질 수 있으므로 예외 처리
 try:
     locale.setlocale(locale.LC_TIME, 'ko_KR.UTF-8')
 except:
@@ -36,31 +35,7 @@ strategy_desc = {
 }
 
 # ==========================================
-# 2. 개선된 safe_download (스레드 충돌 방지용 print 유지)
-# ==========================================
-def safe_download(ticker_symbol, period="1y", retries=3):
-    for attempt in range(retries):
-        try:
-            df = yf.download(
-                ticker_symbol,
-                period=period,
-                progress=False,
-                timeout=20,
-                threads=True,
-                repair=True
-            )
-            if len(df) > 100:
-                if not isinstance(df.index, pd.DatetimeIndex):
-                    df.index = pd.to_datetime(df.index)
-                return df
-        except Exception as e:
-            if attempt == retries - 1:
-                print(f"⚠️ {ticker_symbol} 데이터 로드 실패 (시도 {retries}회): {str(e)[:80]}")
-            time.sleep(1.5 ** attempt)
-    return None
-
-# ==========================================
-# 3. S&P 500 + 나스닥 100 우량주 유니버스 (540개)
+# 2. S&P 500 + 나스닥 100 우량주 유니버스 (540개)
 # ==========================================
 TICKERS = [
     'A', 'AAPL', 'ABBV', 'ABT', 'ACGL', 'ACN', 'ADBE', 'ADI', 'ADM', 'ADP', 'ADSK', 'AEE', 'AEP', 'AES', 'AFL', 'AIG', 'AIZ', 'AJG', 'AKAM', 'ALB', 'ALGN', 'ALL', 'ALLE', 'AMAT', 'AMCR', 'AMD', 'AME', 'AMGN', 'AMP', 'AMT', 'AMZN', 'ANET', 'ANSS', 'AON', 'AOS', 'APA', 'APD', 'APH', 'APTV', 'ARE', 'ATO', 'AVB', 'AVGO', 'AWK', 'AXON', 'AXP', 'AZO', 
@@ -91,11 +66,78 @@ TICKERS = [
     'TEAM', 'DDOG', 'MDB', 'ZS', 'WDAY', 'SNOW', 'PLTR', 'APP', 'TOST', 'CART', 'SG', 'SMCI', 'TMDX',
     'SPY', 'QQQ', 'IWM', 'XBI', 'DIA', 'VTI'
 ]
-
 TICKERS = sorted(list(set(TICKERS)))
 
 # ==========================================
-# 4. 데이터 입출력 및 기록 헬퍼 함수 
+# 3. [핵심] Rate Limit 방지용 Batch Download + 직전 거래일
+# ==========================================
+def get_last_trading_date():
+    today = pd.Timestamp.now(tz='America/New_York').normalize()
+    if today.weekday() >= 5:
+        last_trading = today - offsets.BDay(1)
+    else:
+        last_trading = today - offsets.BDay(0)
+    
+    while True:
+        test_date = last_trading.strftime('%Y-%m-%d')
+        df_test = yf.download("SPY", start=test_date, end=test_date, progress=False, timeout=10)
+        if len(df_test) > 0:
+            return last_trading
+        last_trading -= timedelta(days=1)
+
+@st.cache_data(ttl=3600)
+def bulk_download_all():
+    """한 번에 80개 종목씩 묶어서 다운로드하여 Rate Limit 완벽 회피"""
+    chunks = [TICKERS[i:i+80] for i in range(0, len(TICKERS), 80)]
+    all_data = {}
+    
+    pb = st.progress(0, text="📥 대규모 데이터 병렬 다운로드 중... (Rate Limit 우회)")
+    
+    for idx, chunk in enumerate(chunks):
+        try:
+            # chunk를 통째로 다운로드 (내부적으로 멀티스레딩 동작)
+            data = yf.download(chunk, period="1y", progress=False, timeout=25, threads=True, repair=True)
+            
+            # 멀티 인덱스 분리
+            if isinstance(data.columns, pd.MultiIndex):
+                for ticker in chunk:
+                    try:
+                        df = data.xs(ticker, level=1, axis=1)
+                        if len(df) > 100:
+                            all_data[ticker] = df
+                    except:
+                        continue
+            else:
+                # 1개 티커만 있는 chunk일 경우 (예: 마지막 자투리)
+                for ticker in chunk:
+                    if ticker in data.columns:
+                        all_data[ticker] = data
+        except Exception as e:
+            print(f"Chunk {idx} 다운로드 실패: {str(e)[:80]}")
+        
+        pb.progress((idx+1)/len(chunks))
+        time.sleep(1.0) # 야후 서버에 쉴 틈을 줌 (가장 중요)
+    
+    pb.empty()
+    return all_data
+
+# 단일 종목 분석 (매니저 탭, 분석 탭 등에서 사용)
+def safe_download(ticker_symbol, period="1y", retries=3):
+    for attempt in range(retries):
+        try:
+            df = yf.download(ticker_symbol, period=period, progress=False, timeout=20, threads=True, repair=True)
+            if len(df) > 100:
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    df.index = pd.to_datetime(df.index)
+                return df
+        except Exception as e:
+            if attempt == retries - 1:
+                print(f"⚠️ {ticker_symbol} 데이터 로드 실패 (시도 {retries}회): {str(e)[:80]}")
+            time.sleep(1.5 ** attempt)
+    return None
+
+# ==========================================
+# 4. 데이터 기록 함수
 # ==========================================
 def load_data():
     positions, global_ledger = {}, []
@@ -137,7 +179,7 @@ def log_trade(tkr, trade_type, price, shares, profit=0.0):
     save_data(st.session_state.positions, st.session_state.global_ledger)
 
 # ==========================================
-# 5. 분석 엔진 (API 낭비 없이 SPY 지표에서 기준일 추출)
+# 5. 분석 엔진 (공통)
 # ==========================================
 @st.cache_data(ttl=3600)
 def check_market_filter():
@@ -149,7 +191,6 @@ def check_market_filter():
         curr_spy, ma200_now = spy['Close'].iloc[-1], spy['MA200'].iloc[-1]
         is_trending_up = all(spy['MA200'].tail(6).iloc[i] > spy['MA200'].tail(6).iloc[i-1] for i in range(1, 6))
         
-        # 실제 데이터 인덱스 기반으로 가장 정확한 직전 거래일 추출 및 포맷팅
         last_date_obj = spy.index[-1]
         last_date_str = last_date_obj.strftime('%Y-%m-%d (%A)')
         
@@ -158,42 +199,49 @@ def check_market_filter():
         print(f"시장 필터 계산 중 오류: {str(e)[:80]}")
         return True, 0, 0, False, "알 수 없음"
 
+def compute_indicators(df):
+    """분석 로직을 분리하여 bulk와 개별 다운로드 양쪽에서 재사용"""
+    df['prev_close'] = df['Close'].shift(1)
+    df['TR'] = df.apply(lambda x: max(x['High']-x['Low'], 
+                                      abs(x['High']-x['prev_close']) if pd.notna(x['prev_close']) else 0, 
+                                      abs(x['Low']-x['prev_close']) if pd.notna(x['prev_close']) else 0), axis=1)
+    df['N'] = df['TR'].rolling(20).mean()
+    
+    df['High20'] = df['High'].rolling(20).max().shift(1)
+    df['Low10'] = df['Low'].rolling(10).min().shift(1)
+    
+    df['MA200'] = df['Close'].rolling(200).mean()
+    df['MA20'] = df['Close'].rolling(20).mean()
+    df['MA5'] = df['Close'].rolling(5).mean()
+
+    df['MA18'] = df['Close'].rolling(18).mean()
+    df['Std18'] = df['Close'].rolling(18).std()
+    df['BB_Lower_18'] = df['MA18'] - (df['Std18'] * 2)
+
+    df['Std5'] = df['Close'].rolling(5).std()
+    df['BB_Lower_5'] = df['MA5'] - (df['Std5'] * 2)
+
+    delta = df['Close'].diff()
+    avg_gain = delta.where(delta > 0, 0).ewm(alpha=1/14, adjust=False).mean()
+    avg_loss = -delta.where(delta < 0, 0).ewm(alpha=1/14, adjust=False).mean()
+    df['RSI'] = 100 - (100 / (1 + (avg_gain / (avg_loss + 1e-9))))
+    
+    return df.drop(columns=['prev_close']) if 'prev_close' in df.columns else df
+
+def analyze_ticker_from_bulk(ticker, all_data):
+    if ticker not in all_data: return None
+    df = all_data[ticker].copy()
+    if len(df) < 200: return None
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return compute_indicators(df)
+
 @st.cache_data(ttl=1800)
 def analyze_ticker(ticker):
-    try:
-        df = safe_download(ticker) 
-        if df is None or len(df) < 200: return None
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-
-        df['prev_close'] = df['Close'].shift(1)
-        df['TR'] = df.apply(lambda x: max(x['High']-x['Low'], 
-                                          abs(x['High']-x['prev_close']) if pd.notna(x['prev_close']) else 0, 
-                                          abs(x['Low']-x['prev_close']) if pd.notna(x['prev_close']) else 0), axis=1)
-        df['N'] = df['TR'].rolling(20).mean()
-        
-        df['High20'] = df['High'].rolling(20).max().shift(1)
-        df['Low10'] = df['Low'].rolling(10).min().shift(1)
-        
-        df['MA200'] = df['Close'].rolling(200).mean()
-        df['MA20'] = df['Close'].rolling(20).mean()
-        df['MA5'] = df['Close'].rolling(5).mean()
-
-        df['MA18'] = df['Close'].rolling(18).mean()
-        df['Std18'] = df['Close'].rolling(18).std()
-        df['BB_Lower_18'] = df['MA18'] - (df['Std18'] * 2)
-
-        df['Std5'] = df['Close'].rolling(5).std()
-        df['BB_Lower_5'] = df['MA5'] - (df['Std5'] * 2)
-
-        delta = df['Close'].diff()
-        avg_gain = delta.where(delta > 0, 0).ewm(alpha=1/14, adjust=False).mean()
-        avg_loss = -delta.where(delta < 0, 0).ewm(alpha=1/14, adjust=False).mean()
-        df['RSI'] = 100 - (100 / (1 + (avg_gain / (avg_loss + 1e-9))))
-        
-        return df.drop(columns=['prev_close'])
-    except Exception as e:
-        print(f"⚠️ {ticker} 분석 중 오류: {str(e)[:80]}")
-        return None
+    df = safe_download(ticker)
+    if df is None or len(df) < 200: return None
+    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+    return compute_indicators(df)
 
 @st.cache_data(ttl=86400)
 def get_sec_filings(ticker: str):
@@ -230,7 +278,7 @@ def get_global_news():
         return []
 
 # ==========================================
-# 6. 유지보수성 개선: 전략 평가 공통 함수 
+# 6. 매니저 공통 함수
 # ==========================================
 def update_position_state(tkr, pos, df):
     if df is None: return
@@ -288,7 +336,7 @@ def evaluate_turtle_position(df, pos, config, lt, total_capital, exchange_rate, 
 # ==========================================
 # 7. 메인 UI 
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.57 (Master)", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.58 (Master Bulk)", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state:
     st.session_state.positions, st.session_state.global_ledger = load_data()
@@ -329,11 +377,10 @@ if up_file := st.sidebar.file_uploader("📂 백업 CSV 업로드"):
         except Exception as e: 
             st.sidebar.error(f"❌ 오류: {e}")
 
-st.title("🐢 Turtle System Pro V7.57")
+st.title("🐢 Turtle System Pro V7.58")
 
-# 시장 필터 및 기준일(last_date) 추출 
 is_bull, spy_val, ma200_val, is_trending, last_date = check_market_filter()
-st.caption(f"📅 **데이터 기준일:** {last_date} (직전 거래일 종가 자동 반영)")
+st.caption(f"📅 **데이터 기준일:** {last_date} (직전 거래일 자동 반영 / Rate Limit 우회 모드)")
 
 if is_bull: 
     st.success(f"🟢 시장 통과 | SPY: ${spy_val:.2f} / MA200: ${ma200_val:.2f} | {'📈 상승 추세' if is_trending else '➡️ 횡보'}")
@@ -342,72 +389,69 @@ else:
 
 with st.expander("💡 현재 시장 상황 맞춤 트레이딩 가이드", expanded=True):
     if spy_val >= ma200_val and is_trending:
-        st.markdown("#### 🌞 [완벽한 강세장] 적극적인 추세 추종")
-        st.write("지수가 장기 생명선(200일선) 위에 있고 추세도 살아있는 **최적의 장세**입니다.")
+        st.markdown("#### 🌞 [완벽 강세장] 적극적인 추세 추종")
         st.markdown("- **1순위 (적극 추천):** `📈 20일-눌림목`\n- **2순위:** `🚀 터틀-상승`\n- **비추천:** `📉 BB-낙폭과대`")
     elif spy_val >= ma200_val and not is_trending:
         st.markdown("#### ⛅ [횡보/조정장] 돌파 매매 주의")
-        st.write("지수가 200일선 위에는 있지만, 단기적으로 힘이 빠져 횡보하고 있습니다.")
         st.markdown("- **1순위 (추천):** `📈 20일-눌림목`\n- **2순위:** `📉 BB-낙폭과대`\n- **❌ 금지:** `🚀 터틀-상승`")
     elif spy_val < ma200_val and is_trending:
         st.markdown("#### ⛈️ [강세장 속 폭락] 패닉 셀링 줍기")
-        st.write("장기 펀더멘털은 견고하나 악재/투매로 지수가 200일선을 깬 **공포 장세**입니다.")
-        st.markdown("- **1순위 (강력 추천):** `📉 BB-낙폭과대`\n- **⚠️ 주의:** `📈 20일-눌림목` (평소 비중 절반 접근)\n- **❌ 절대 금지:** `🚀 터틀-상승`")
+        st.markdown("- **1순위 (강력 추천):** `📉 BB-낙폭과대`\n- **⚠️ 주의:** `📈 20일-눌림목`\n- **❌ 절대 금지:** `🚀 터틀-상승`")
     else:
-        st.markdown("#### ❄️ [완벽한 빙하기] 현금 관망 최우선")
-        st.write("지수가 200일선 아래에 있고 추세마저 꺾인 **대세 하락장**입니다.")
-        st.markdown("- **1순위:** **현금 관망 (스캐너 사용 자제)**\n- **2순위 (초단기 대응):** `📉 BB-낙폭과대`\n- **❌ 절대 금지:** `🚀 터틀-상승`, `📈 20일-눌림목`")
+        st.markdown("#### ❄️ [완벽 빙하기] 현금 관망 최우선")
+        st.markdown("- **1순위:** **현금 관망**\n- **2순위:** `📉 BB-낙폭과대`\n- **❌ 절대 금지:** `🚀 터틀-상승`, `📈 20일-눌림목`")
 
 tabs = st.tabs(["🚀 터틀", "📈 눌림목", "📉 BB낙폭", "📋 매니저", "🇺🇸 분석", "🌍 뉴스", "📊 일지"])
 
 # ==========================================
-# 8. 스캐너 탭 (병렬 처리 + Thread 안전성 유지)
+# 8. 스캐너 탭 (완벽한 Bulk 처리)
 # ==========================================
 for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"]):
     with tabs[i]:
         st.info(f"💡 **전략 설명:** {strategy_desc.get(s_name, '')}")
         config = STRATEGY_CONFIG.get(s_name, {"risk_pct": 2.0})
+        
         if st.button(f"🔎 {s_name} 스캔 (총 {len(TICKERS)}개)", key=f"run_{i}", use_container_width=True):
-            res, is_cand = [], False
-            pb = st.progress(0, text="전 종목 분석 중... (병렬 처리 중)")
+            res = []
+            # 1. 한 번에 모든 데이터 다운로드
+            all_data = bulk_download_all()
             
-            with ThreadPoolExecutor(max_workers=12) as executor:
-                future_to_tkr = {executor.submit(analyze_ticker, tkr): tkr for tkr in TICKERS}
+            pb = st.progress(0, text="✅ 데이터 다운로드 완료, 종목 분석 진행 중...")
+            
+            # 2. 로컬에서 데이터 분석 (API 통신 없음 -> 엄청나게 빠름)
+            for idx, tkr in enumerate(TICKERS):
+                pb.progress((idx + 1) / len(TICKERS))
+                df = analyze_ticker_from_bulk(tkr, all_data)
                 
-                for idx, future in enumerate(as_completed(future_to_tkr)):
-                    tkr = future_to_tkr[future]
-                    pb.progress((idx + 1) / len(TICKERS), text=f"{idx+1}/{len(TICKERS)} 처리 중...")
-                    try:
-                        df = future.result()
-                        if df is not None:
-                            lt, pv = df.iloc[-1], df.iloc[-2]
-                            cond = False
-                            
-                            if "터틀" in s_name:
-                                cond = (lt['Close'] > lt['High20']) and (lt['Close'] > lt['MA200'])
-                            elif "눌림목" in s_name:
-                                signal = (df['Low'].iloc[-5:] <= df['MA20'].iloc[-5:]).any()
-                                cond = signal and (lt['Close'] > lt['MA5']) and (pv['Close'] <= pv['MA5']) and (lt['Close'] > lt['MA200'])
-                            else: 
-                                cond = (lt['BB_Lower_5'] < lt['BB_Lower_18']) and (lt['BB_Lower_5'] <= lt['Close'] <= lt['BB_Lower_18'])
-
-                            if cond:
-                                risk_sh = (total_capital * (config["risk_pct"] / 100)) / (lt['N'] * exchange_rate) if lt['N'] > 0 else 0
-                                cash_sh = (total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate)
-                                final_sh = round(min(risk_sh, cash_sh), 4)
-                                if final_sh >= 0.0001: 
-                                    res.append({"tkr": tkr, "p": lt['Close'], "sh": final_sh, "n": lt['N']})
-                    except Exception:
-                        continue
+                if df is not None:
+                    lt, pv = df.iloc[-1], df.iloc[-2]
+                    cond = False
+                    if "터틀" in s_name:
+                        cond = (lt['Close'] > lt['High20']) and (lt['Close'] > lt['MA200'])
+                    elif "눌림목" in s_name:
+                        signal = (df['Low'].iloc[-5:] <= df['MA20'].iloc[-5:]).any()
+                        cond = signal and (lt['Close'] > lt['MA5']) and (pv['Close'] <= pv['MA5']) and (lt['Close'] > lt['MA200'])
+                    else:
+                        cond = (lt['BB_Lower_5'] < lt['BB_Lower_18']) and (lt['BB_Lower_5'] <= lt['Close'] <= lt['BB_Lower_18'])
+                    
+                    if cond:
+                        risk_sh = (total_capital * (config["risk_pct"] / 100)) / (lt['N'] * exchange_rate) if lt['N'] > 0 else 0
+                        cash_sh = (total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate)
+                        final_sh = round(min(risk_sh, cash_sh), 4)
+                        if final_sh >= 0.0001:
+                            res.append({"tkr": tkr, "p": lt['Close'], "sh": final_sh, "n": lt['N']})
             
             pb.empty()
-            if not res: 
-                st.info("ℹ️ 포착된 종목이 없습니다.")
+            
+            if not res:
+                st.warning("📢 현재 조건을 만족하는 매수 타점 종목이 없습니다. (현금 관망)")
+            else:
+                st.success(f"🎯 총 {len(res)}개 종목 포착!")
 
             for r in res:
                 with st.container(border=True):
                     l_col, r_col = st.columns([3, 1])
-                    l_col.write(f"### {r['tkr']} [✅ 포착]\n현재가: ${r['p']:.2f} | 수량: {r['sh']:.4f}주 | N: ${r['n']:.2f}")
+                    l_col.write(f"### {r['tkr']} [✅ 포착]\n📅 기준일: {last_date}\n현재가: ${r['p']:.2f} | 수량: {r['sh']:.4f}주 | N: ${r['n']:.2f}")
                     if r_col.button("➕ 등록", key=f"reg_{r['tkr']}_{i}"):
                         st.session_state.positions[r['tkr']] = {
                             'Units': 1, 'Highest': r['p'], 
@@ -437,6 +481,7 @@ with tabs[3]:
             st.rerun()
 
     for tkr, pos in list(st.session_state.positions.items()):
+        # 매니저는 개별 조회 사용 (부하 적음)
         df = analyze_ticker(tkr)
         if df is None: continue
         st_n = pos['Strategy']
@@ -490,13 +535,13 @@ with tabs[3]:
                     if curr_u < max_u:
                         st.success(f"🔥 불타기(추가매수) 포인트 도달! (${add_pt:.2f}) 👉 추천 수량: {add_shares:.4f}주 ({curr_u + 1}유닛)")
                     else:
-                        st.warning(f"⚠️ 불타기 포인트(${add_pt:.2f}) 도달했으나 종목 할당 유닛 초과로 추가매수 금지")
+                        st.warning(f"⚠️ 불타기 포인트 도달했으나 할당 유닛 초과")
                 else:
                     status_msg = f"✅ 순항 중 (수익률: {profit:.2%} | {stop_name}: ${effective_stop:.2f})"
                     if curr_u < max_u:
-                        st.info(f"{status_msg} \n\n **📍 다음 불타기(${add_pt:.2f})에서 추천 매수수량 {add_shares:.4f}주 ({curr_u + 1}유닛)**")
+                        st.info(f"{status_msg} \n\n **📍 다음 불타기(${add_pt:.2f}) 추천수량 {add_shares:.4f}주**")
                     else:
-                        st.info(f"{status_msg} \n\n **📍 다음 불타기(${add_pt:.2f})에서 종목 할당 유닛 초과로 추가매수금지**")
+                        st.info(f"{status_msg} \n\n **📍 불타기 유닛 한도 도달 완료**")
             
             elif "BB" in st_n or "낙폭과대" in st_n or "눌림목" in st_n:
                 profit_highest = (pos['Highest'] / avg_e - 1) if avg_e > 0 else 0
@@ -520,11 +565,11 @@ with tabs[3]:
                 if lt['Close'] < dyn_sl: 
                     st.error(f"🛑 {sl_name} 이탈! 전량 매도 권장 (${dyn_sl:.2f})")
                 elif lt['Close'] >= tp3: 
-                    st.success(f"🎉 3차 익절(+15%) 도달! 남은 전량 익절 권장 (${tp3:.2f})")
+                    st.success(f"🎉 3차 익절(+15%) 도달! 전량 익절 권장 (${tp3:.2f})")
                 elif lt['Close'] >= tp2: 
-                    st.success(f"💰 2차 익절(+10%) 도달! 25% 매도 권장 (현재 방어선: 본전+10%)")
+                    st.success(f"💰 2차 익절(+10%) 도달! 25% 매도 권장")
                 elif lt['Close'] >= tp1: 
-                    st.success(f"💵 1차 익절(+6%) 도달! 50% 매도 권장 (현재 방어선: 본전+6%)")
+                    st.success(f"💵 1차 익절(+6%) 도달! 50% 매도 권장")
                 else: 
                     st.info(f"✅ 순항 중 (수익률: {profit:.2%} | {sl_name}: ${dyn_sl:.2f})")
 
@@ -607,3 +652,4 @@ with tabs[6]:
     if st.session_state.global_ledger:
         df_l = pd.DataFrame(st.session_state.global_ledger).iloc[::-1]
         st.dataframe(df_l, use_container_width=True)
+

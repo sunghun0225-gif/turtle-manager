@@ -1,7 +1,6 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
 import os, time, requests, json, feedparser, urllib.parse
 import altair as alt
 from datetime import datetime, timedelta
@@ -9,7 +8,7 @@ import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # ==========================================
-# 1. 설정 및 리스크 파라미터 (위험 감수율 차등 적용)
+# 1. 설정 및 리스크 파라미터
 # ==========================================
 DB_FILE = 'internal_memory.csv'
 MAX_TOTAL_UNITS = 10
@@ -37,7 +36,7 @@ def safe_download(ticker_symbol, period="1y", retries=3):
     return None
 
 # ==========================================
-# 2. S&P 500 + 나스닥 100 우량주 유니버스 (잡주 제외 540개)
+# 2. S&P 500 + 나스닥 100 우량주 유니버스
 # ==========================================
 TICKERS = [
     'A', 'AAPL', 'ABBV', 'ABT', 'ACGL', 'ACN', 'ADBE', 'ADI', 'ADM', 'ADP', 'ADSK', 'AEE', 'AEP', 'AES', 'AFL', 'AIG', 'AIZ', 'AJG', 'AKAM', 'ALB', 'ALGN', 'ALL', 'ALLE', 'AMAT', 'AMCR', 'AMD', 'AME', 'AMGN', 'AMP', 'AMT', 'AMZN', 'ANET', 'ANSS', 'AON', 'AOS', 'APA', 'APD', 'APH', 'APTV', 'ARE', 'ATO', 'AVB', 'AVGO', 'AWK', 'AXON', 'AXP', 'AZO', 
@@ -92,7 +91,8 @@ def load_data():
 
             positions[tkr] = {
                 'Units': len([h for h in history if h.get('type') == 'Buy']),
-                'Highest': float(row['Highest']), 'History': history,
+                'Highest': float(row['Highest']), 
+                'History': history,
                 'Strategy': row.get('Strategy', '🚀 터틀-상승'),
                 'last_pyramid_level': row.get('last_pyramid_level') if pd.notna(row.get('last_pyramid_level')) else None
             }
@@ -134,12 +134,13 @@ def analyze_ticker(ticker):
     df['prev_close'] = df['Close'].shift(1)
     df['TR'] = df.apply(lambda x: max(x['High']-x['Low'], abs(x['High']-x['prev_close']) if pd.notna(x['prev_close']) else 0, abs(x['Low']-x['prev_close']) if pd.notna(x['prev_close']) else 0), axis=1)
     df['N'] = df['TR'].rolling(20).mean()
-    df['High20'], df['High55'] = df['High'].rolling(20).max().shift(1), df['High'].rolling(55).max().shift(1)
-    df['Low10'], df['Low20'] = df['Low'].rolling(10).min().shift(1), df['Low'].rolling(20).min().shift(1)
     
-    df['MA200'], df['MA20'], df['MA5'] = df['Close'].rolling(200).mean(), df['Close'].rolling(20).mean(), df['Close'].rolling(5).mean()
-    df['Std'] = df['Close'].rolling(20).std()
-    df['BB_Lower'], df['BB_Upper'] = df['MA20'] - (df['Std'] * 2), df['MA20'] + (df['Std'] * 2)
+    df['High20'] = df['High'].rolling(20).max().shift(1)
+    df['Low10'] = df['Low'].rolling(10).min().shift(1)
+    
+    df['MA200'] = df['Close'].rolling(200).mean()
+    df['MA20'] = df['Close'].rolling(20).mean()
+    df['MA5'] = df['Close'].rolling(5).mean()
 
     df['MA18'] = df['Close'].rolling(18).mean()
     df['Std18'] = df['Close'].rolling(18).std()
@@ -149,8 +150,10 @@ def analyze_ticker(ticker):
     df['BB_Lower_5'] = df['MA5'] - (df['Std5'] * 2)
 
     delta = df['Close'].diff()
-    avg_gain, avg_loss = delta.where(delta > 0, 0).ewm(alpha=1/14, adjust=False).mean(), -delta.where(delta < 0, 0).ewm(alpha=1/14, adjust=False).mean()
+    avg_gain = delta.where(delta > 0, 0).ewm(alpha=1/14, adjust=False).mean()
+    avg_loss = -delta.where(delta < 0, 0).ewm(alpha=1/14, adjust=False).mean()
     df['RSI'] = 100 - (100 / (1 + (avg_gain / (avg_loss + 1e-9))))
+    
     return df.drop(columns=['prev_close'])
 
 @st.cache_data(ttl=86400)
@@ -211,7 +214,8 @@ if up_file := st.sidebar.file_uploader("📂 백업 CSV 업로드"):
             st.session_state.global_ledger = next((json.loads(row['History']) for _, row in df[df['Ticker'] == '_GLOBAL_LEDGER_'].iterrows()), [])
             save_data(st.session_state.positions, st.session_state.global_ledger)
             st.rerun()
-        except Exception as e: st.sidebar.error(f"❌ 오류: {e}")
+        except Exception as e: 
+            st.sidebar.error(f"❌ 오류: {e}")
 
 # 메인 타이틀 및 시장 상태 필터
 st.title("🐢 Turtle System Pro V7.55")
@@ -244,7 +248,7 @@ with st.expander("💡 현재 시장 상황 맞춤 트레이딩 가이드", expa
 tabs = st.tabs(["🚀 터틀", "📈 눌림목", "📉 BB낙폭", "📋 매니저", "🇺🇸 분석", "🌍 뉴스", "📊 일지"])
 
 # ==========================================
-# 6. 스캐너 탭 (설명 원복)
+# 6. 스캐너 탭 
 # ==========================================
 for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"]):
     with tabs[i]:
@@ -272,30 +276,41 @@ for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 
                         risk_sh = (total_capital * (config["risk_pct"] / 100)) / (lt['N'] * exchange_rate) if lt['N'] > 0 else 0
                         cash_sh = (total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate)
                         final_sh = round(min(risk_sh, cash_sh), 4)
-                        if final_sh >= 0.0001: res.append({"tkr": tkr, "p": lt['Close'], "sh": final_sh, "n": lt['N']})
+                        if final_sh >= 0.0001: 
+                            res.append({"tkr": tkr, "p": lt['Close'], "sh": final_sh, "n": lt['N']})
             pb.empty()
-            if not res: st.info("ℹ️ 포착된 종목이 없습니다.")
+            if not res: 
+                st.info("ℹ️ 포착된 종목이 없습니다.")
 
             for r in res:
                 with st.container(border=True):
                     l_col, r_col = st.columns([3, 1])
                     l_col.write(f"### {r['tkr']} [✅ 포착]\n현재가: ${r['p']:.2f} | 수량: {r['sh']:.4f}주 | N: ${r['n']:.2f}")
                     if r_col.button("➕ 등록", key=f"reg_{r['tkr']}_{i}"):
-                        st.session_state.positions[r['tkr']] = {'Units': 1, 'Highest': r['p'], 'History': [{'type': 'Buy', 'price': r['p'], 'shares': r['sh']}], 'Strategy': s_name, 'last_pyramid_level': r['p']}
+                        st.session_state.positions[r['tkr']] = {
+                            'Units': 1, 'Highest': r['p'], 
+                            'History': [{'type': 'Buy', 'price': r['p'], 'shares': r['sh']}], 
+                            'Strategy': s_name, 'last_pyramid_level': r['p']
+                        }
                         log_trade(r['tkr'], 'Buy', r['p'], r['sh'])
                         st.rerun()
 
 # ==========================================
-# 7. 매니저 탭 (할당량 현황 및 모든 종목 알림창 추가)
+# 7. 매니저 탭 
 # ==========================================
 with tabs[3]:
     with st.expander("✍️ 수기 등록", expanded=False):
         mc1, mc2, mc3, mc4 = st.columns(4)
         m_t = mc1.text_input("티커").upper()
         m_s = mc2.selectbox("전략", ["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"])
-        m_p, m_h = mc3.number_input("진입가", value=0.0), mc4.number_input("수량", value=1.0, min_value=0.0001, format="%.4f")
+        m_p = mc3.number_input("진입가", value=0.0)
+        m_h = mc4.number_input("수량", value=1.0, min_value=0.0001, format="%.4f")
         if st.button("➕ 등록", use_container_width=True) and m_t:
-            st.session_state.positions[m_t] = {'Units': 1, 'Highest': m_p, 'History': [{'type': 'Buy', 'price': m_p, 'shares': m_h}], 'Strategy': m_s, 'last_pyramid_level': m_p}
+            st.session_state.positions[m_t] = {
+                'Units': 1, 'Highest': m_p, 
+                'History': [{'type': 'Buy', 'price': m_p, 'shares': m_h}], 
+                'Strategy': m_s, 'last_pyramid_level': m_p
+            }
             log_trade(m_t, 'Buy', m_p, m_h)
             st.rerun()
 
@@ -315,25 +330,34 @@ with tabs[3]:
                 total_s = max(0.0, total_s - sh)
                 rem_sell = sh
                 while rem_sell > 0.0001 and active_lots:
-                    if active_lots[-1]['shares'] > rem_sell: active_lots[-1]['shares'] -= rem_sell; rem_sell = 0
-                    else: rem_sell -= active_lots[-1]['shares']; active_lots.pop()
+                    if active_lots[-1]['shares'] > rem_sell: 
+                        active_lots[-1]['shares'] -= rem_sell
+                        rem_sell = 0
+                    else: 
+                        rem_sell -= active_lots[-1]['shares']
+                        active_lots.pop()
         
         if total_s <= 0.0001:
-            del st.session_state.positions[tkr]; needs_save = True; continue
+            del st.session_state.positions[tkr]
+            needs_save = True
+            continue
             
-        pos['Units'], pos['last_pyramid_level'] = len(active_lots), active_lots[-1]['price'] if active_lots else avg_e
+        pos['Units'] = len(active_lots)
+        pos['last_pyramid_level'] = active_lots[-1]['price'] if active_lots else avg_e
         profit = (lt['Close'] / avg_e - 1) if avg_e > 0 else 0.0
         
         if lt['Close'] > pos['Highest']: 
-            pos['Highest'] = lt['Close']; needs_save = True
+            pos['Highest'] = lt['Close']
+            needs_save = True
 
         with st.container(border=True):
             h1, h2 = st.columns([4, 1])
             h1.markdown(f"#### {tkr} :{'blue' if '터틀' in st_n else ('green' if '눌림목' in st_n else 'red')}[({st_n})] - {total_s:.4f}주")
             if h2.button("전량 매도", key=f"ex_{tkr}"):
-                del st.session_state.positions[tkr]; log_trade(tkr, 'Sell (All)', lt['Close'], total_s, (lt['Close'] - avg_e) * total_s); st.rerun()
+                del st.session_state.positions[tkr]
+                log_trade(tkr, 'Sell (All)', lt['Close'], total_s, (lt['Close'] - avg_e) * total_s)
+                st.rerun()
 
-            # 매니저 탭 할당량 현황 표시 (전략 설명은 제외됨)
             max_u = config.get("max_unit_per_stock", 2)
             curr_u = pos['Units']
             fill_pct = (curr_u / max_u) * 100 if max_u > 0 else 0
@@ -341,33 +365,36 @@ with tabs[3]:
             st.write(f"**🛒 진입 현황:** 총 **{curr_u}회** 매수 진행 / 최대 **{max_u}회** 진입 가능 (`할당량의 {fill_pct:.0f}%` 채움)")
             st.progress(min(curr_u / max_u, 1.0) if max_u > 0 else 0.0)
 
-            lvls, add_shares, add_pt = [{'val': avg_e, 'name': '평단가', 'col': 'gray'}], -1.0, 0.0
+            lvls, add_pt = [{'val': avg_e, 'name': '평단가', 'col': 'gray'}], 0.0
 
             if "터틀" in st_n:
                 base_p = pos.get('last_pyramid_level', avg_e)
                 dyn_stop, add_pt, trail = base_p - (2.0 * lt['N']), base_p + (0.5 * lt['N']), lt['Low10']
-                lvls.extend([{'val': dyn_stop, 'name': '통합손절', 'col': 'red'}, {'val': trail, 'name': 'Trailing', 'col': 'green'}, {'val': add_pt, 'name': '불타기', 'col': 'orange'}])
+                lvls.extend([
+                    {'val': dyn_stop, 'name': '통합손절', 'col': 'red'}, 
+                    {'val': trail, 'name': 'Trailing', 'col': 'green'}, 
+                    {'val': add_pt, 'name': '불타기', 'col': 'orange'}
+                ])
                 
-                # 터틀 전략에도 상태 알림창 추가
-                if lt['Close'] < dyn_stop:
-                    st.error(f"🛑 통합손절 이탈! 전량 매도 권장 (${dyn_stop:.2f})")
+                effective_stop = max(dyn_stop, trail)
+                stop_name = "Trailing(10일저점)" if effective_stop == trail else "통합손절(-2N)"
+
+                if lt['Close'] < effective_stop:
+                    st.error(f"🛑 {stop_name} 이탈! 전량 매도 권장 (${effective_stop:.2f})")
                 elif lt['Close'] >= add_pt:
                     st.success(f"🔥 불타기(추가매수) 포인트 도달! (${add_pt:.2f})")
                 else:
-                    st.info(f"✅ 순항 중 (수익률: {profit:.2%} | 통합손절: ${dyn_stop:.2f})")
+                    st.info(f"✅ 순항 중 (수익률: {profit:.2%} | {stop_name}: ${effective_stop:.2f})")
             
             elif "BB" in st_n or "낙폭과대" in st_n or "눌림목" in st_n:
                 profit_highest = (pos['Highest'] / avg_e - 1) if avg_e > 0 else 0
                 
                 if profit_highest >= 0.10:
-                    dyn_sl = avg_e * 1.10  
-                    sl_name = "TS 방어선 (+10%)"
+                    dyn_sl, sl_name = avg_e * 1.10, "TS 방어선 (+10%)"
                 elif profit_highest >= 0.06:
-                    dyn_sl = avg_e * 1.06  
-                    sl_name = "TS 방어선 (+6%)"
+                    dyn_sl, sl_name = avg_e * 1.06, "TS 방어선 (+6%)"
                 else:
-                    dyn_sl = avg_e * 0.96  
-                    sl_name = "초기 손절 (-4%)"
+                    dyn_sl, sl_name = avg_e * 0.96, "초기 손절 (-4%)"
                     
                 tp1, tp2, tp3 = avg_e * 1.06, avg_e * 1.10, avg_e * 1.15
                 
@@ -392,21 +419,46 @@ with tabs[3]:
             lvls.append({'val': lt['Close'], 'name': '현재가', 'col': 'purple'})
             
             c_df = df.reset_index()[['Date', 'Close']].tail(60)
-            chart = alt.layer(alt.Chart(c_df).mark_line(color='#1f77b4').encode(x=alt.X('Date:T', title=None), y=alt.Y('Close:Q', scale=alt.Scale(zero=False))), *[alt.layer(alt.Chart(pd.DataFrame({'y': [l['val']]})).mark_rule(strokeDash=[5, 5], color=l['col']).encode(y='y:Q'), alt.Chart(pd.DataFrame({'Date': [c_df['Date'].max()], 'y': [l['val']], 't': [f"{l['name']}: ${l['val']:.2f}"]})).mark_text(align='left', dx=5, dy=-4, color=l['col'], fontWeight='bold').encode(x='Date:T', y='y:Q', text='t:N')) for l in lvls if not pd.isna(l['val'])]).properties(height=320)
+            chart = alt.layer(
+                alt.Chart(c_df).mark_line(color='#1f77b4').encode(
+                    x=alt.X('Date:T', title=None), 
+                    y=alt.Y('Close:Q', scale=alt.Scale(zero=False))
+                ), 
+                *[alt.layer(
+                    alt.Chart(pd.DataFrame({'y': [l['val']]})).mark_rule(strokeDash=[5, 5], color=l['col']).encode(y='y:Q'), 
+                    alt.Chart(pd.DataFrame({'Date': [c_df['Date'].max()], 'y': [l['val']], 't': [f"{l['name']}: ${l['val']:.2f}"]})).mark_text(align='left', dx=5, dy=-4, color=l['col'], fontWeight='bold').encode(x='Date:T', y='y:Q', text='t:N')
+                ) for l in lvls if not pd.isna(l['val'])]
+            ).properties(height=320)
+            
             st.altair_chart(chart, use_container_width=True)
 
             c_p, c_s = st.columns(2)
-            u_p, u_s = c_p.number_input("단가", value=float(lt['Close']), key=f"up_{tkr}"), c_s.number_input("수량", value=1.0, min_value=0.0001, format="%.4f", key=f"us_{tkr}")
+            u_p = c_p.number_input("단가", value=float(lt['Close']), key=f"up_{tkr}")
+            u_s = c_s.number_input("수량", value=1.0, min_value=0.0001, format="%.4f", key=f"us_{tkr}")
             b_a, b_s, b_d = st.columns(3)
-            if b_a.button("➕ 부분 매수", key=f"ba_{tkr}", use_container_width=True): pos['History'].append({'type': 'Buy', 'price': u_p, 'shares': u_s}); log_trade(tkr, 'Buy', u_p, u_s); st.rerun()
-            if b_s.button("➖ 부분 매도", key=f"bs_{tkr}", use_container_width=True):
-                if u_s >= total_s: del st.session_state.positions[tkr]; log_trade(tkr, 'Sell (All)', u_p, total_s, (u_p - avg_e) * total_s)
-                else: pos['History'].append({'type': 'Sell', 'price': u_p, 'shares': u_s}); log_trade(tkr, 'Sell (Partial)', u_p, u_s, (u_p - avg_e) * u_s)
+            
+            if b_a.button("➕ 부분 매수", key=f"ba_{tkr}", use_container_width=True): 
+                pos['History'].append({'type': 'Buy', 'price': u_p, 'shares': u_s})
+                log_trade(tkr, 'Buy', u_p, u_s)
                 st.rerun()
+            
+            if b_s.button("➖ 부분 매도", key=f"bs_{tkr}", use_container_width=True):
+                if u_s >= total_s: 
+                    del st.session_state.positions[tkr]
+                    log_trade(tkr, 'Sell (All)', u_p, total_s, (u_p - avg_e) * total_s)
+                else: 
+                    pos['History'].append({'type': 'Sell', 'price': u_p, 'shares': u_s})
+                    log_trade(tkr, 'Sell (Partial)', u_p, u_s, (u_p - avg_e) * u_s)
+                st.rerun()
+                
             if b_d.button("🔙 취소", key=f"bd_{tkr}", use_container_width=True):
                 for idx in range(len(st.session_state.global_ledger)-1, -1, -1):
-                    if st.session_state.global_ledger[idx]['ticker'] == tkr: st.session_state.global_ledger.pop(idx); break
-                pos['History'].pop(); save_data(st.session_state.positions, st.session_state.global_ledger); st.rerun()
+                    if st.session_state.global_ledger[idx]['ticker'] == tkr: 
+                        st.session_state.global_ledger.pop(idx)
+                        break
+                pos['History'].pop()
+                save_data(st.session_state.positions, st.session_state.global_ledger)
+                st.rerun()
 
             with st.expander(f"📜 {tkr} 매수/매도 상세 내역", expanded=False):
                 if pos['History']:
@@ -425,11 +477,15 @@ with tabs[4]:
     if (t_in := st.text_input("티커 분석").upper()) and st.button("분석 실행"):
         if (d := analyze_ticker(t_in)) is not None:
             st.info(f"**[{t_in}]** 종가: **${d['Close'].iloc[-1]:.2f}** | RSI: **{d['RSI'].iloc[-1]:.1f}**")
-            with st.expander("📋 SEC", expanded=True): [st.write(f"- {f['form']} ({f['date']}) [링크]({f['url']})") for f in get_sec_filings(t_in)]
-            with st.expander("📰 뉴스", expanded=True): [st.write(f"- [{n['title']}]({n['link']})") for n in get_stock_news(t_in)]
+            with st.expander("📋 SEC", expanded=True): 
+                [st.write(f"- {f['form']} ({f['date']}) [링크]({f['url']})") for f in get_sec_filings(t_in)]
+            with st.expander("📰 뉴스", expanded=True): 
+                [st.write(f"- [{n['title']}]({n['link']})") for n in get_stock_news(t_in)]
 
 with tabs[5]:
-    if st.button("🔄 뉴스 새로고침"): get_global_news.clear(); st.rerun()
+    if st.button("🔄 뉴스 새로고침"): 
+        get_global_news.clear()
+        st.rerun()
     [st.write(f"📍 [{i['title']}]({i['link']})") for i in get_global_news()]
 
 with tabs[6]:

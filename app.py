@@ -362,7 +362,8 @@ with tabs[3]:
             curr_u = pos['Units']
             fill_pct = (curr_u / max_u) * 100 if max_u > 0 else 0
             
-            st.write(f"**🛒 진입 현황:** 총 **{curr_u}회** 매수 진행 / 최대 **{max_u}회** 진입 가능 (`할당량의 {fill_pct:.0f}%` 채움)")
+            # [수정] 횟수(회) 단어를 유닛(Unit)으로 변경
+            st.write(f"**🛒 진입 현황:** 총 **{curr_u} 유닛** 매수 진행 / 최대 **{max_u} 유닛** 진입 가능 (`할당량의 {fill_pct:.0f}%` 채움)")
             st.progress(min(curr_u / max_u, 1.0) if max_u > 0 else 0.0)
 
             lvls, add_pt = [{'val': avg_e, 'name': '평단가', 'col': 'gray'}], 0.0
@@ -376,7 +377,6 @@ with tabs[3]:
                     {'val': add_pt, 'name': '불타기', 'col': 'orange'}
                 ])
                 
-                # 추천 수량 계산
                 risk_sh = (total_capital * (config["risk_pct"] / 100)) / (lt['N'] * exchange_rate) if lt['N'] > 0 else 0
                 cash_sh = (total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate)
                 add_shares = round(min(risk_sh, cash_sh), 4)
@@ -392,7 +392,6 @@ with tabs[3]:
                     else:
                         st.warning(f"⚠️ 불타기 포인트(${add_pt:.2f}) 도달했으나 종목 할당 유닛 초과로 추가매수 금지")
                 else:
-                    # [수정] 도달 전 미리 다음 불타기 정보 표시
                     status_msg = f"✅ 순항 중 (수익률: {profit:.2%} | {stop_name}: ${effective_stop:.2f})"
                     if curr_u < max_u:
                         st.info(f"{status_msg} \n\n **📍 다음 불타기(${add_pt:.2f})에서 추천 매수수량 {add_shares:.4f}주 ({curr_u + 1}유닛)**")

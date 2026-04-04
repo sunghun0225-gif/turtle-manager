@@ -1,6 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import os, time, requests, json, feedparser, urllib.parse
 import altair as alt
 from datetime import datetime, timedelta
@@ -8,6 +9,13 @@ import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
+import locale
+
+# 시스템에 따라 한글 요일이 깨질 수 있으므로 예외 처리 (한국어 환경 시도)
+try:
+    locale.setlocale(locale.LC_TIME, 'ko_KR.UTF-8')
+except:
+    pass
 
 # ==========================================
 # 1. 설정 및 리스크 파라미터 
@@ -28,10 +36,9 @@ strategy_desc = {
 }
 
 # ==========================================
-# 2. 개선된 safe_download (에러핸들링 + 성능 + 보안 강화)
+# 2. 개선된 safe_download (스레드 충돌 방지용 print 유지)
 # ==========================================
 def safe_download(ticker_symbol, period="1y", retries=3):
-    """기존 동작 100% 유지 + 에러 상세 메시지 + timeout 증가 + threads=True (st.toast 제거)"""
     for attempt in range(retries):
         try:
             df = yf.download(
@@ -43,16 +50,17 @@ def safe_download(ticker_symbol, period="1y", retries=3):
                 repair=True
             )
             if len(df) > 100:
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    df.index = pd.to_datetime(df.index)
                 return df
         except Exception as e:
             if attempt == retries - 1:
-                # 스레드 충돌 방지를 위해 print 사용
                 print(f"⚠️ {ticker_symbol} 데이터 로드 실패 (시도 {retries}회): {str(e)[:80]}")
             time.sleep(1.5 ** attempt)
     return None
 
 # ==========================================
-# 3. S&P 500 + 나스닥 100 우량주 유니버스 
+# 3. S&P 500 + 나스닥 100 우량주 유니버스 (540개)
 # ==========================================
 TICKERS = [
     'A', 'AAPL', 'ABBV', 'ABT', 'ACGL', 'ACN', 'ADBE', 'ADI', 'ADM', 'ADP', 'ADSK', 'AEE', 'AEP', 'AES', 'AFL', 'AIG', 'AIZ', 'AJG', 'AKAM', 'ALB', 'ALGN', 'ALL', 'ALLE', 'AMAT', 'AMCR', 'AMD', 'AME', 'AMGN', 'AMP', 'AMT', 'AMZN', 'ANET', 'ANSS', 'AON', 'AOS', 'APA', 'APD', 'APH', 'APTV', 'ARE', 'ATO', 'AVB', 'AVGO', 'AWK', 'AXON', 'AXP', 'AZO', 
@@ -96,15 +104,12 @@ def load_data():
         for _, row in df.iterrows():
             tkr = row['Ticker']
             history = json.loads(row['History']) if isinstance(row['History'], str) else (row['History'] if isinstance(row['History'], list) else [])
-            
             if tkr == '_GLOBAL_LEDGER_':
                 global_ledger = history
                 continue
-
             for h in history:
                 h['type'] = h.get('type', 'Buy')
                 h['shares'] = float(h.get('shares', 0.0))
-
             positions[tkr] = {
                 'Units': len([h for h in history if h.get('type') == 'Buy']),
                 'Highest': float(row['Highest']), 
@@ -115,7 +120,6 @@ def load_data():
     return positions, global_ledger
 
 def save_data(positions, global_ledger):
-    """항상 최신 상태를 저장"""
     rows = [{'Ticker': k, 'Units': v.get('Units', 1), 'Highest': v['Highest'], 
              'History': json.dumps(v.get('History', [])), 
              'Strategy': v.get('Strategy', '🚀 터틀-상승'), 
@@ -133,25 +137,29 @@ def log_trade(tkr, trade_type, price, shares, profit=0.0):
     save_data(st.session_state.positions, st.session_state.global_ledger)
 
 # ==========================================
-# 5. 분석 엔진 
+# 5. 분석 엔진 (API 낭비 없이 SPY 지표에서 기준일 추출)
 # ==========================================
 @st.cache_data(ttl=3600)
 def check_market_filter():
     try:
         spy = safe_download("SPY", period="1y") 
-        if spy is None: return True, 0, 0, False
+        if spy is None: return True, 0, 0, False, "알 수 없음"
         if isinstance(spy.columns, pd.MultiIndex): spy.columns = spy.columns.get_level_values(0)
         spy['MA200'] = spy['Close'].rolling(200).mean()
         curr_spy, ma200_now = spy['Close'].iloc[-1], spy['MA200'].iloc[-1]
         is_trending_up = all(spy['MA200'].tail(6).iloc[i] > spy['MA200'].tail(6).iloc[i-1] for i in range(1, 6))
-        return (curr_spy > ma200_now) and is_trending_up, curr_spy, ma200_now, is_trending_up
+        
+        # 실제 데이터 인덱스 기반으로 가장 정확한 직전 거래일 추출 및 포맷팅
+        last_date_obj = spy.index[-1]
+        last_date_str = last_date_obj.strftime('%Y-%m-%d (%A)')
+        
+        return (curr_spy > ma200_now) and is_trending_up, curr_spy, ma200_now, is_trending_up, last_date_str
     except Exception as e:
-        st.toast(f"시장 필터 계산 중 오류: {str(e)[:80]}", icon="⚠️")
-        return True, 0, 0, False
+        print(f"시장 필터 계산 중 오류: {str(e)[:80]}")
+        return True, 0, 0, False, "알 수 없음"
 
 @st.cache_data(ttl=1800)
 def analyze_ticker(ticker):
-    """기존 로직 100% 유지 + 내부 예외 처리 (st.toast 제외)"""
     try:
         df = safe_download(ticker) 
         if df is None or len(df) < 200: return None
@@ -184,7 +192,6 @@ def analyze_ticker(ticker):
         
         return df.drop(columns=['prev_close'])
     except Exception as e:
-        # 스레드 충돌 방지
         print(f"⚠️ {ticker} 분석 중 오류: {str(e)[:80]}")
         return None
 
@@ -204,7 +211,6 @@ def get_sec_filings(ticker: str):
                  "url": f"https://www.sec.gov/cgi-bin/browse-edgar?CIK={cik}&action=getcompany"} 
                 for i in range(min(10, len(recent.get("form", []))))]
     except Exception:
-        st.toast(f"SEC 데이터 로드 실패 ({ticker})", icon="⚠️")
         return []
 
 def get_stock_news(query_name):
@@ -213,7 +219,6 @@ def get_stock_news(query_name):
         return sorted([{"title": e.title, "link": e.link, "date": (datetime(*e.published_parsed[:6]) + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M (KST)") if e.get("published_parsed") else "미상", "raw": e.get("published_parsed", (0,)*9)} 
                        for e in feed.entries[:15]], key=lambda x: x['raw'], reverse=True)[:8]
     except Exception:
-        st.toast("뉴스 로드 실패", icon="⚠️")
         return []
 
 @st.cache_data(ttl=1800)
@@ -222,14 +227,12 @@ def get_global_news():
         return [{"title": e.title, "link": e.link, "date": (datetime(*e.published_parsed[:6]) + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M') if e.get("published_parsed") else "미상"} 
                 for e in feedparser.parse("https://news.google.com/rss/search?q=global+economy+market+when:24h&hl=en-US&gl=US&ceid=US:en").entries[:10]]
     except Exception:
-        st.toast("글로벌 뉴스 로드 실패", icon="⚠️")
         return []
 
 # ==========================================
 # 6. 유지보수성 개선: 전략 평가 공통 함수 
 # ==========================================
 def update_position_state(tkr, pos, df):
-    """매니저 탭에서 반복되던 Units / last_pyramid_level / Highest 업데이트 로직 추출"""
     if df is None: return
     lt = df.iloc[-1]
     total_s, avg_e, active_lots = 0.0, 0.0, []
@@ -252,7 +255,7 @@ def update_position_state(tkr, pos, df):
                     active_lots.pop()
     
     if total_s <= 0.0001:
-        return None  # 삭제 대상
+        return None 
     
     pos['Units'] = len(active_lots)
     pos['last_pyramid_level'] = active_lots[-1]['price'] if active_lots else avg_e
@@ -261,7 +264,6 @@ def update_position_state(tkr, pos, df):
     return pos, avg_e, total_s, lt
 
 def evaluate_turtle_position(df, pos, config, lt, total_capital, exchange_rate, avg_e):
-    """터틀 전략 전용 평가 로직 분리 (avg_e 원복 완료)"""
     base_p = pos.get('last_pyramid_level', avg_e) 
     dyn_stop = base_p - (config.get("initial_stop_n", 2.0) * lt['N'])
     add_pt = base_p + (config.get("pyramid_n", 0.5) * lt['N'])
@@ -286,7 +288,7 @@ def evaluate_turtle_position(df, pos, config, lt, total_capital, exchange_rate, 
 # ==========================================
 # 7. 메인 UI 
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.55 (Master)", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.57 (Master)", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state:
     st.session_state.positions, st.session_state.global_ledger = load_data()
@@ -327,8 +329,11 @@ if up_file := st.sidebar.file_uploader("📂 백업 CSV 업로드"):
         except Exception as e: 
             st.sidebar.error(f"❌ 오류: {e}")
 
-st.title("🐢 Turtle System Pro V7.55")
-is_bull, spy_val, ma200_val, is_trending = check_market_filter()
+st.title("🐢 Turtle System Pro V7.57")
+
+# 시장 필터 및 기준일(last_date) 추출 
+is_bull, spy_val, ma200_val, is_trending, last_date = check_market_filter()
+st.caption(f"📅 **데이터 기준일:** {last_date} (직전 거래일 종가 자동 반영)")
 
 if is_bull: 
     st.success(f"🟢 시장 통과 | SPY: ${spy_val:.2f} / MA200: ${ma200_val:.2f} | {'📈 상승 추세' if is_trending else '➡️ 횡보'}")
@@ -339,24 +344,24 @@ with st.expander("💡 현재 시장 상황 맞춤 트레이딩 가이드", expa
     if spy_val >= ma200_val and is_trending:
         st.markdown("#### 🌞 [완벽한 강세장] 적극적인 추세 추종")
         st.write("지수가 장기 생명선(200일선) 위에 있고 추세도 살아있는 **최적의 장세**입니다.")
-        st.markdown("- **1순위 (적극 추천):** `📈 20일-눌림목` (우상향 주도주의 건강한 조정을 공략)\n- **2순위:** `🚀 터틀-상승` (강력한 돌파 매매 가능)\n- **비추천:** `📉 BB-낙폭과대` (초우량주는 하단 밴드까지 잘 떨어지지 않음)")
+        st.markdown("- **1순위 (적극 추천):** `📈 20일-눌림목`\n- **2순위:** `🚀 터틀-상승`\n- **비추천:** `📉 BB-낙폭과대`")
     elif spy_val >= ma200_val and not is_trending:
         st.markdown("#### ⛅ [횡보/조정장] 돌파 매매 주의")
         st.write("지수가 200일선 위에는 있지만, 단기적으로 힘이 빠져 횡보하고 있습니다.")
-        st.markdown("- **1순위 (추천):** `📈 20일-눌림목` (박스권 하단 지지 확인 후 매수)\n- **2순위:** `📉 BB-낙폭과대` (단기 급락 종목 위주)\n- **❌ 금지:** `🚀 터틀-상승` (가짜 돌파에 속아 고점에 물릴 위험 큼)")
+        st.markdown("- **1순위 (추천):** `📈 20일-눌림목`\n- **2순위:** `📉 BB-낙폭과대`\n- **❌ 금지:** `🚀 터틀-상승`")
     elif spy_val < ma200_val and is_trending:
         st.markdown("#### ⛈️ [강세장 속 폭락] 패닉 셀링 줍기")
         st.write("장기 펀더멘털은 견고하나 악재/투매로 지수가 200일선을 깬 **공포 장세**입니다.")
-        st.markdown("- **1순위 (강력 추천):** `📉 BB-낙폭과대` (억울하게 폭락한 우량주의 V자 반등을 노리는 바닥 쇼핑 찬스)\n- **⚠️ 주의:** `📈 20일-눌림목` (지하실로 뚫고 갈 수 있으므로 평소 비중의 절반만 접근)\n- **❌ 절대 금지:** `🚀 터틀-상승`")
+        st.markdown("- **1순위 (강력 추천):** `📉 BB-낙폭과대`\n- **⚠️ 주의:** `📈 20일-눌림목` (평소 비중 절반 접근)\n- **❌ 절대 금지:** `🚀 터틀-상승`")
     else:
         st.markdown("#### ❄️ [완벽한 빙하기] 현금 관망 최우선")
         st.write("지수가 200일선 아래에 있고 추세마저 꺾인 **대세 하락장**입니다.")
-        st.markdown("- **1순위:** **현금 관망 (스캐너 사용 자제)**\n- **2순위 (초단기 대응):** `📉 BB-낙폭과대` (극단적 투매 시 3분할 트레일링 스탑으로 짧게만 대응)\n- **❌ 절대 금지:** `🚀 터틀-상승`, `📈 20일-눌림목`")
+        st.markdown("- **1순위:** **현금 관망 (스캐너 사용 자제)**\n- **2순위 (초단기 대응):** `📉 BB-낙폭과대`\n- **❌ 절대 금지:** `🚀 터틀-상승`, `📈 20일-눌림목`")
 
 tabs = st.tabs(["🚀 터틀", "📈 눌림목", "📉 BB낙폭", "📋 매니저", "🇺🇸 분석", "🌍 뉴스", "📊 일지"])
 
 # ==========================================
-# 8. 스캐너 탭 - 성능 대폭 개선 (ThreadPoolExecutor)
+# 8. 스캐너 탭 (병렬 처리 + Thread 안전성 유지)
 # ==========================================
 for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"]):
     with tabs[i]:
@@ -366,7 +371,6 @@ for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 
             res, is_cand = [], False
             pb = st.progress(0, text="전 종목 분석 중... (병렬 처리 중)")
             
-            # === 성능 개선 핵심: 병렬 처리 ===
             with ThreadPoolExecutor(max_workers=12) as executor:
                 future_to_tkr = {executor.submit(analyze_ticker, tkr): tkr for tkr in TICKERS}
                 
@@ -603,4 +607,3 @@ with tabs[6]:
     if st.session_state.global_ledger:
         df_l = pd.DataFrame(st.session_state.global_ledger).iloc[::-1]
         st.dataframe(df_l, use_container_width=True)
-

@@ -20,6 +20,12 @@ STRATEGY_CONFIG = {
     "📉 BB-낙폭과대": {"risk_pct": 1.5, "max_unit_per_stock": 2}
 }
 
+strategy_desc = {
+    "🚀 터틀-상승": "20일 고점 돌파 및 200일선 위에서 강한 상승 추세를 타는 종목입니다. (추세 추종)",
+    "📈 20일-눌림목": "우상향 중인 우량주가 20일 이동평균선 근처까지 건강한 조정을 받은 상태입니다. (눌림목)",
+    "📉 BB-낙폭과대": "볼린저 밴드 하단 및 단기 이격도 과다로 인해 V자 반등이 기대되는 종목입니다. (낙폭과대)"
+}
+
 def safe_download(ticker_symbol, period="1y", retries=3):
     for attempt in range(retries):
         try:
@@ -188,12 +194,6 @@ current_units = sum(pos.get('Units', 0) for pos in st.session_state.positions.va
 risk_ratio = min(current_units / MAX_TOTAL_UNITS, 1.0)
 st.sidebar.progress(risk_ratio, text=f"투입 유닛: {current_units} / {MAX_TOTAL_UNITS} MAX")
 
-# [추가] 종목당 할당 유닛 금액 및 전체 매수 여력 표시
-unit_amount = total_capital / MAX_TOTAL_UNITS
-remaining_capital = total_capital - (current_units * unit_amount)
-st.sidebar.markdown(f"**💰 종목당 1유닛 할당액:** ₩{int(unit_amount):,}")
-st.sidebar.markdown(f"**💵 전체 추가 매수 여력:** ₩{int(remaining_capital):,}")
-
 if current_units >= MAX_TOTAL_UNITS:
     st.sidebar.error("⚠️ 최대 허용 유닛 도달! 신규 매수 금지")
 elif current_units >= MAX_TOTAL_UNITS * 0.8:
@@ -244,20 +244,10 @@ with st.expander("💡 현재 시장 상황 맞춤 트레이딩 가이드", expa
 tabs = st.tabs(["🚀 터틀", "📈 눌림목", "📉 BB낙폭", "📋 매니저", "🇺🇸 분석", "🌍 뉴스", "📊 일지"])
 
 # ==========================================
-# 6. 스캐너 탭
+# 6. 스캐너 탭 (설명 원복)
 # ==========================================
-# [추가] 전략별 설명 텍스트 딕셔너리
-strategy_desc = {
-    "🚀 터틀-상승": "20일 고점 돌파 및 200일선 위에서 강한 상승 추세를 타는 종목을 포착합니다. (추세 추종 매매)",
-    "📈 20일-눌림목": "우상향 중인 우량주가 20일 이동평균선 근처까지 건강한 조정을 받을 때 진입합니다. (눌림목 매매)",
-    "📉 BB-낙폭과대": "볼린저 밴드 하단 및 단기 이격도 과다로 인해 V자 반등이 기대되는 종목을 포착합니다. (역추세/낙폭과대 매매)"
-}
-
 for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"]):
     with tabs[i]:
-        # [추가] 각 매매법 탭에 간단한 설명과 현황 표시
-        st.info(f"💡 **전략 설명:** {strategy_desc[s_name]}")
-        
         config = STRATEGY_CONFIG.get(s_name, {"risk_pct": 2.0})
         if st.button(f"🔎 {s_name} 스캔 (총 {len(TICKERS)}개)", key=f"run_{i}", use_container_width=True):
             res, is_cand = [], False
@@ -295,7 +285,7 @@ for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 
                         st.rerun()
 
 # ==========================================
-# 7. 매니저 탭
+# 7. 매니저 탭 (설명 및 진입현황 추가)
 # ==========================================
 with tabs[3]:
     with st.expander("✍️ 수기 등록", expanded=False):
@@ -341,6 +331,16 @@ with tabs[3]:
             h1.markdown(f"#### {tkr} :{'blue' if '터틀' in st_n else ('green' if '눌림목' in st_n else 'red')}[({st_n})] - {total_s:.4f}주")
             if h2.button("전량 매도", key=f"ex_{tkr}"):
                 del st.session_state.positions[tkr]; log_trade(tkr, 'Sell (All)', lt['Close'], total_s, (lt['Close'] - avg_e) * total_s); st.rerun()
+
+            # [추가] 매니저 탭 종목 설명 및 할당량 현황 표시
+            st.info(f"💡 **전략 설명:** {strategy_desc.get(st_n, '')}")
+            
+            max_u = config.get("max_unit_per_stock", 2)
+            curr_u = pos['Units']
+            fill_pct = (curr_u / max_u) * 100 if max_u > 0 else 0
+            
+            st.write(f"**🛒 진입 현황:** 총 **{curr_u}회** 매수 진행 / 최대 **{max_u}회** 진입 가능 (`할당량의 {fill_pct:.0f}%` 채움)")
+            st.progress(min(curr_u / max_u, 1.0) if max_u > 0 else 0.0)
 
             lvls, add_shares, add_pt = [{'val': avg_e, 'name': '평단가', 'col': 'gray'}], -1.0, 0.0
 

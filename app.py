@@ -203,7 +203,7 @@ def log_trade(tkr, trade_type, price, shares, profit=0.0):
     save_data(st.session_state.positions, st.session_state.global_ledger)
 
 # ==========================================
-# 4. 분석 엔진
+# 4. 분석 엔진 (MACD 추가)
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def check_market_filter():
@@ -264,10 +264,18 @@ def compute_indicators(df):
     df['Std5'] = df['Close'].rolling(5).std()
     df['BB_Lower_5'] = df['MA5'] - (df['Std5'] * 2)
 
+    # RSI (14일)
     delta = df['Close'].diff()
     avg_gain = delta.where(delta > 0, 0).ewm(alpha=1 / 14, adjust=False).mean()
     avg_loss = -delta.where(delta < 0, 0).ewm(alpha=1 / 14, adjust=False).mean()
     df['RSI'] = 100 - (100 / (1 + (avg_gain / (avg_loss + 1e-9))))
+
+    # MACD (12, 26, 9)
+    df['EMA12'] = df['Close'].ewm(span=12, adjust=False).mean()
+    df['EMA26'] = df['Close'].ewm(span=26, adjust=False).mean()
+    df['MACD'] = df['EMA12'] - df['EMA26']
+    df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
 
     df = df.drop(columns=['prev_close']) if 'prev_close' in df.columns else df
     return df
@@ -390,7 +398,7 @@ def evaluate_turtle_position(df, pos, config, lt, total_capital, exchange_rate, 
 # ==========================================
 # 6. 메인 UI
 # ==========================================
-st.set_page_config(page_title="Turtle Pro V7.64 (Master Stable)", layout="centered", page_icon="🐢")
+st.set_page_config(page_title="Turtle Pro V7.65 (Final Stable)", layout="centered", page_icon="🐢")
 
 if "positions" not in st.session_state:
     st.session_state.positions, st.session_state.global_ledger = load_data()
@@ -440,7 +448,7 @@ if up_file := st.sidebar.file_uploader("📂 백업 CSV 업로드"):
         except Exception as e:
             st.sidebar.error(f"❌ 오류: {e}")
 
-st.title("🐢 Turtle System Pro V7.64")
+st.title("🐢 Turtle System Pro V7.65")
 
 is_bull, spy_val, ma200_val, is_trending, last_date = check_market_filter()
 st.caption(f"📅 **데이터 기준일:** {last_date}")
@@ -568,6 +576,10 @@ with tabs[3]:
             h1, h2 = st.columns([4, 1])
             h1.markdown(
                 f"#### {tkr} :{'blue' if '터틀' in st_n else ('green' if '눌림목' in st_n else 'red')}[({st_n})] - {total_s:.4f}주")
+            
+            # 심플하게 반영된 RSI 및 MACD 지표
+            h1.caption(f"📊 **표준 지표** | RSI(14): **{lt.get('RSI', 0):.1f}** | MACD(12,26,9): **{lt.get('MACD', 0):.2f}**")
+            
             if h2.button("전량 매도", key=f"ex_{tkr}"):
                 del st.session_state.positions[tkr]
                 log_trade(tkr, 'Sell (All)', lt['Close'], total_s, (lt['Close'] - avg_e) * total_s)

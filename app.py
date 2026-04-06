@@ -475,7 +475,7 @@ with st.expander("💡 현재 시장 상황 맞춤 트레이딩 가이드", expa
 tabs = st.tabs(["🚀 터틀", "📈 눌림목", "📉 BB낙폭", "📋 매니저", "🇺🇸 분석", "🌍 뉴스", "📊 일지"])
 
 # ==========================================
-# 7. 스캐너 탭
+# 7. 스캐너 탭 (NATR 추가됨)
 # ==========================================
 for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"]):
     with tabs[i]:
@@ -514,7 +514,9 @@ for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 
                         cash_sh = (total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate)
                         final_sh = round(min(risk_sh, cash_sh), 4)
                         if final_sh >= 0.0001:
-                            res.append({"tkr": tkr, "p": lt['Close'], "sh": final_sh, "n": lt['N']})
+                            # NATR 계산 로직 추가
+                            natr = (lt['N'] / lt['Close'] * 100) if lt['Close'] > 0 else 0
+                            res.append({"tkr": tkr, "p": lt['Close'], "sh": final_sh, "n": lt['N'], "natr": natr})
 
             pb.empty()
 
@@ -526,7 +528,8 @@ for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 
             for r in res:
                 with st.container(border=True):
                     l_col, r_col = st.columns([3, 1])
-                    l_col.write(f"### {r['tkr']} [✅ 포착]\n📅 기준일: {last_date}\n현재가: ${r['p']:.2f} | 수량: {r['sh']:.4f}주 | N: ${r['n']:.2f}")
+                    # N값 뒤에 NATR 표시 추가
+                    l_col.write(f"### {r['tkr']} [✅ 포착]\n📅 기준일: {last_date}\n현재가: ${r['p']:.2f} | 수량: {r['sh']:.4f}주 | N: ${r['n']:.2f} (NATR: {r['natr']:.2f}%)")
                     if r_col.button("➕ 등록", key=f"reg_{r['tkr']}_{i}"):
                         st.session_state.positions[r['tkr']] = {
                             'Units': 1, 'Highest': r['p'],

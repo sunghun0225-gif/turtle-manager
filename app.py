@@ -475,12 +475,16 @@ with st.expander("💡 현재 시장 상황 맞춤 트레이딩 가이드", expa
 tabs = st.tabs(["🚀 터틀", "📈 눌림목", "📉 BB낙폭", "📋 매니저", "🇺🇸 분석", "🌍 뉴스", "📊 일지"])
 
 # ==========================================
-# 7. 스캐너 탭 (NATR 추가됨)
+# 7. 스캐너 탭 (버튼 중첩 버그 수정 및 NATR 적용)
 # ==========================================
 for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 BB-낙폭과대"]):
     with tabs[i]:
         st.info(f"💡 **전략 설명:** {strategy_desc.get(s_name, '')}")
         config = STRATEGY_CONFIG.get(s_name, {"risk_pct": 2.0})
+
+        # 버튼 중첩 해결을 위해 스캔 결과를 세션에 저장할 공간 마련
+        if f"scan_res_{i}" not in st.session_state:
+            st.session_state[f"scan_res_{i}"] = None
 
         if st.button(f"🔎 {s_name} 스캔 (총 {len(TICKERS)}개)", key=f"run_{i}", use_container_width=True):
             res = []
@@ -488,48 +492,52 @@ for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 
 
             if len(all_data) == 0:
                 st.error("🚨 야후 파이낸스에서 데이터를 불러오지 못했습니다. 사이드바의 **[데이터 캐시 강제 초기화]** 버튼을 누른 후 다시 시도해주세요.")
-                st.stop()
             else:
                 st.success(f"📊 정상 수집된 종목: **{len(all_data)}개** (전체 {len(TICKERS)}개 중)")
+                pb = st.progress(0, text="종목 분석 진행 중...")
 
-            pb = st.progress(0, text="종목 분석 진행 중...")
+                for idx, tkr in enumerate(TICKERS):
+                    pb.progress((idx + 1) / len(TICKERS))
+                    df = analyze_ticker_from_bulk(tkr, all_data)
 
-            for idx, tkr in enumerate(TICKERS):
-                pb.progress((idx + 1) / len(TICKERS))
-                df = analyze_ticker_from_bulk(tkr, all_data)
+                    if df is not None:
+                        lt, pv = df.iloc[-1], df.iloc[-2]
+                        cond = False
+                        if "터틀" in s_name:
+                            cond = (lt['Close'] > lt['High20']) and (lt['Close'] > lt['MA200'])
+                        elif "눌림목" in s_name:
+                            signal = (df['Low'].iloc[-5:] <= df['MA20'].iloc[-5:]).any()
+                            cond = signal and (lt['Close'] > lt['MA5']) and (pv['Close'] <= pv['MA5']) and (lt['Close'] > lt['MA200'])
+                        else:
+                            cond = (lt['BB_Lower_5'] < lt['BB_Lower_18']) and (lt['BB_Lower_5'] <= lt['Close'] <= lt['BB_Lower_18'])
 
-                if df is not None:
-                    lt, pv = df.iloc[-1], df.iloc[-2]
-                    cond = False
-                    if "터틀" in s_name:
-                        cond = (lt['Close'] > lt['High20']) and (lt['Close'] > lt['MA200'])
-                    elif "눌림목" in s_name:
-                        signal = (df['Low'].iloc[-5:] <= df['MA20'].iloc[-5:]).any()
-                        cond = signal and (lt['Close'] > lt['MA5']) and (pv['Close'] <= pv['MA5']) and (lt['Close'] > lt['MA200'])
-                    else:
-                        cond = (lt['BB_Lower_5'] < lt['BB_Lower_18']) and (lt['BB_Lower_5'] <= lt['Close'] <= lt['BB_Lower_18'])
+                        if cond:
+                            risk_sh = (total_capital * (config["risk_pct"] / 100)) / (lt['N'] * exchange_rate) if lt['N'] > 0 else 0
+                            cash_sh = (total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate)
+                            final_sh = round(min(risk_sh, cash_sh), 4)
+                            if final_sh >= 0.0001:
+                                natr = (lt['N'] / lt['Close'] * 100) if lt['Close'] > 0 else 0
+                                res.append({"tkr": tkr, "p": lt['Close'], "sh": final_sh, "n": lt['N'], "natr": natr})
 
-                    if cond:
-                        risk_sh = (total_capital * (config["risk_pct"] / 100)) / (lt['N'] * exchange_rate) if lt['N'] > 0 else 0
-                        cash_sh = (total_capital / MAX_TOTAL_UNITS) / (lt['Close'] * exchange_rate)
-                        final_sh = round(min(risk_sh, cash_sh), 4)
-                        if final_sh >= 0.0001:
-                            # NATR 계산 로직 추가
-                            natr = (lt['N'] / lt['Close'] * 100) if lt['Close'] > 0 else 0
-                            res.append({"tkr": tkr, "p": lt['Close'], "sh": final_sh, "n": lt['N'], "natr": natr})
+                pb.empty()
+                
+                # 분석이 끝나면 결과를 세션 상태에 저장
+                st.session_state[f"scan_res_{i}"] = res
 
-            pb.empty()
-
-            if not res:
+        # 스캔 버튼 블록 '바깥'에서 세션 상태에 있는 결과를 읽어와 화면에 출력
+        if st.session_state[f"scan_res_{i}"] is not None:
+            current_res = st.session_state[f"scan_res_{i}"]
+            
+            if not current_res:
                 st.warning("📢 현재 조건을 만족하는 매수 타점 종목이 없습니다. (현금 관망을 추천합니다)")
             else:
-                st.info(f"🎯 총 {len(res)}개 종목 포착!")
+                st.info(f"🎯 총 {len(current_res)}개 종목 포착!")
 
-            for r in res:
+            for r in current_res:
                 with st.container(border=True):
                     l_col, r_col = st.columns([3, 1])
-                    # N값 뒤에 NATR 표시 추가
                     l_col.write(f"### {r['tkr']} [✅ 포착]\n📅 기준일: {last_date}\n현재가: ${r['p']:.2f} | 수량: {r['sh']:.4f}주 | N: ${r['n']:.2f} (NATR: {r['natr']:.2f}%)")
+                    
                     if r_col.button("➕ 등록", key=f"reg_{r['tkr']}_{i}"):
                         st.session_state.positions[r['tkr']] = {
                             'Units': 1, 'Highest': r['p'],
@@ -537,6 +545,9 @@ for i, s_name in enumerate(["🚀 터틀-상승", "📈 20일-눌림목", "📉 
                             'Strategy': s_name, 'last_pyramid_level': r['p']
                         }
                         log_trade(r['tkr'], 'Buy', r['p'], r['sh'])
+                        
+                        # 등록이 완료되면 스캔 결과 리스트에서 해당 종목 삭제
+                        st.session_state[f"scan_res_{i}"] = [item for item in current_res if item['tkr'] != r['tkr']]
                         st.rerun()
 
 # ==========================================

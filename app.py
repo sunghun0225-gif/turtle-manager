@@ -426,10 +426,23 @@ elif current_units >= MAX_TOTAL_UNITS * 0.8:
     st.sidebar.warning("⚡ 리스크 한도 임박 (80% 이상)")
 else:
     st.sidebar.success("✅ 리스크 관리 양호")
-st.sidebar.markdown("---")
 
-if up_file := st.sidebar.file_uploader("📂 백업 CSV 업로드"):
-    if st.sidebar.button("데이터 즉시 복구", type="primary"):
+# 💾 데이터 백업 및 복구 기능 (다운로드 버튼 포함)
+st.sidebar.markdown("---")
+st.sidebar.subheader("💾 데이터 백업 및 복구")
+
+if os.path.exists(DB_FILE):
+    with open(DB_FILE, "rb") as file:
+        st.sidebar.download_button(
+            label="📥 현재 상태 백업 CSV 다운로드",
+            data=file,
+            file_name=f"turtle_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+if up_file := st.sidebar.file_uploader("📂 백업 CSV 업로드 (복구용)"):
+    if st.sidebar.button("데이터 즉시 복구", type="primary", use_container_width=True):
         try:
             df = pd.read_csv(up_file)
             st.session_state.positions = {row['Ticker']: {
